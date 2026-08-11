@@ -6,7 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
-from ai.assistant import StabduebelAssistant
+from ai.assistant import (
+    MULTI_SHEAR_TWO_INTERNAL_PLATES,
+    TWO_SHEAR_ONE_INTERNAL_PLATE,
+    StabduebelAssistant,
+)
 from ai.optimizer import optimize_stabduebel
 from calculations.oenorm_validation import validate_oenorm
 from calculations.stabduebel import StabduebelInput, calculate_stabduebel
@@ -66,9 +70,16 @@ def test_one_plate_is_always_nationally_inadmissible() -> None:
 @pytest.mark.parametrize(
     "wording",
     [
+        "1 innenliegendes Blech",
         "ein Stahlblech",
+        "ein innenliegendes Blech",
+        "Holz Stahl Holz",
         "Holz-Stahl-Holz",
+        "zweischnittig",
+        "zweischnittige Verbindung",
         "zweischnittig mit einem Stahlblech",
+        "zweischnittig ein innenliegendes Blech",
+        "jetzt nur ein Blech",
     ],
 )
 def test_assistant_recognizes_one_plate_connection_wordings(wording: str) -> None:
@@ -78,6 +89,9 @@ def test_assistant_recognizes_one_plate_connection_wordings(wording: str) -> Non
     assert reply.result is not None
     assert reply.result.input.number_of_plates_ns == 1
     assert reply.result.input.shear_planes_s == 2
+    assert assistant.state.connection_type == TWO_SHEAR_ONE_INTERNAL_PLATE
+    assert assistant.state.parameters["number_of_plates_ns"] == 1
+    assert assistant.state.shear_planes_s == 2
     assert "Gleichung (8.11)" in reply.text
     assert "nicht zulässig" in reply.text
 
@@ -88,9 +102,50 @@ def test_chat_switches_between_connection_cases() -> None:
     two = respond(assistant, "jetzt mit 2 Stahlblechen")
 
     assert one.result.input.shear_planes_s == 2
+    assert assistant.state.connection_type == MULTI_SHEAR_TWO_INTERNAL_PLATES
     assert two.result.input.number_of_plates_ns == 2
     assert two.result.input.shear_planes_s == 4
     assert "mehrschnittig, 2 innenliegende Stahlbleche" in two.text
+
+
+def test_followup_keeps_one_plate_case_and_routes_only_one_plate_variants() -> None:
+    assistant = StabduebelAssistant()
+    respond(assistant, "140 kN, GL24h, 2 Stahlbleche")
+    respond(assistant, "jetzt 1 innenliegendes Blech")
+    reply = respond(assistant, "so wenig Dübel wie möglich")
+
+    assert reply.result is not None
+    assert assistant.state.connection_type == TWO_SHEAR_ONE_INTERNAL_PLATE
+    assert assistant.state.shear_planes_s == 2
+    assert assistant.state.parameters["number_of_plates_ns"] == 1
+    assert assistant.state.last_optimization.evaluated
+    assert all(
+        item.input.number_of_plates_ns == 1
+        and item.input.shear_planes_s == 2
+        for item in assistant.state.last_optimization.evaluated
+    )
+
+
+def test_einschnittig_asks_without_changing_state() -> None:
+    assistant = StabduebelAssistant()
+    respond(assistant, "140 kN, GL24h, 2 Stahlbleche")
+    before_parameters = dict(assistant.state.parameters)
+    before_fixed = set(assistant.state.fixed_parameters)
+    before_connection = assistant.state.connection_type
+    before_shear_planes = assistant.state.shear_planes_s
+    before_result = assistant.state.last_result
+    before_optimization = assistant.state.last_optimization
+
+    reply = respond(assistant, "einschnittig")
+
+    assert "echte einschnittige Stahl-Holz-Verbindung" in reply.text
+    assert "Holz | Stahl | Holz" in reply.text
+    assert assistant.state.parameters == before_parameters
+    assert assistant.state.fixed_parameters == before_fixed
+    assert assistant.state.connection_type == before_connection
+    assert assistant.state.shear_planes_s == before_shear_planes
+    assert assistant.state.last_result is before_result
+    assert assistant.state.last_optimization is before_optimization
 
 
 def test_optimizer_compares_both_but_selects_only_nationally_admissible_case() -> None:
