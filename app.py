@@ -17,6 +17,7 @@ from calculations.stabduebel import (
     StabduebelResult,
     calculate_stabduebel,
 )
+from calculations.oenorm_validation import ValidationStatus, validate_oenorm
 from infopol.materials import TimberMaterialRepository
 
 
@@ -528,7 +529,8 @@ class StabduebelApp(ctk.CTk):
         self.ai_mode_label.configure(text="Bereit")
 
     def _update_status_block(self, result: StabduebelResult) -> None:
-        passed = result.passed
+        validation = validate_oenorm(result.input, result)
+        passed = validation.admissible
         color = self.GREEN if passed else self.RED
         background = "#E8F5EE" if passed else "#FBEAEC"
         data = result.input
@@ -549,6 +551,11 @@ class StabduebelApp(ctk.CTk):
                 f"Stahlbleche: {data.number_of_plates_ns} · "
                 f"Dicke {data.plate_thickness_ts_mm:g} mm\n"
                 f"Holzklasse: {data.timber_grade}"
+                + (
+                    "\nValidierung: "
+                    + "; ".join(check.name for check in validation.failures)
+                    if validation.failures else ""
+                )
             )
         )
         self.ai_utilization_bar.configure(progress_color=color)
@@ -601,7 +608,8 @@ class StabduebelApp(ctk.CTk):
             messagebox.showerror("Berechnungsfehler", str(exc))
 
     def _update_manual_status_block(self, result: StabduebelResult) -> None:
-        passed = result.passed
+        validation = validate_oenorm(result.input, result)
+        passed = validation.admissible
         color = self.GREEN if passed else self.RED
         background = "#E8F5EE" if passed else "#FBEAEC"
         data = result.input
@@ -627,6 +635,11 @@ class StabduebelApp(ctk.CTk):
                 f"Ø{data.dowel_diameter_d_mm:g} mm\n"
                 f"Stahlbleche: {data.number_of_plates_ns} · "
                 f"Dicke {data.plate_thickness_ts_mm:g} mm"
+                + (
+                    "\nValidierung: "
+                    + "; ".join(check.name for check in validation.failures)
+                    if validation.failures else ""
+                )
             ),
             text_color=self.TEXT,
         )
@@ -635,6 +648,7 @@ class StabduebelApp(ctk.CTk):
 
     @staticmethod
     def _detailed_result(result: StabduebelResult) -> str:
+        validation = validate_oenorm(result.input, result)
         lines = [
             f"Holzklasse: {result.input.timber_grade}",
             f"Last: {result.input.force_ed_kn:.2f} kN",
@@ -656,8 +670,25 @@ class StabduebelApp(ctk.CTk):
             [
                 f"Maßgebend: {result.governing_check.name}",
                 f"Maximale Ausnutzung: {result.governing_check.utilization:.2f}",
-                "GESAMT: " + ("ERFÜLLT" if result.passed else "NICHT ERFÜLLT"),
+                "TRAGFÄHIGKEITSNACHWEISE: "
+                + ("ERFÜLLT" if result.passed else "NICHT ERFÜLLT"),
+                "",
+                "TECHNISCHE VALIDIERUNG · Normprofil ÖNORM",
             ]
+        )
+        for check in validation.checks:
+            symbol = (
+                "✓" if check.status is ValidationStatus.PASSED
+                else "✕" if check.status is ValidationStatus.FAILED
+                else "!"
+            )
+            lines.append(
+                f"{symbol} {check.name}: {check.status.value}\n"
+                f"  {check.message}\n  Quelle: {check.source}"
+            )
+        lines.append(
+            "TECHNISCHES GESAMTERGEBNIS: "
+            + ("ZULÄSSIG UND ERFÜLLT" if validation.admissible else "NICHT ZULÄSSIG")
         )
         return "\n".join(lines)
 

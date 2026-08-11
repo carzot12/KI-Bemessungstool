@@ -216,6 +216,29 @@ setzt nur das Ziel "minimize_fasteners" oder die Randbedingung
 "max_utilization". Ein deterministischer Python-Optimierer erzeugt und
 berechnet anschließend sämtliche Varianten.
 
+INTENT UND RÜCKFRAGEN
+
+Ordne jede Nachricht genau einem Intent zu:
+
+- PARAMETER_CHANGE: eindeutige Änderung eines bestehenden Entwurfs
+- NEW_DESIGN: Beginn oder vollständige Beschreibung eines neuen Entwurfs
+- OPTIMIZE: Suche nach weniger Stabdübeln oder einer Zielausnutzung
+- EXPLAIN_RESULT: Frage nach dem vorhandenen Ergebnis oder dem maßgebenden Nachweis
+- ASK_CURRENT_STATE: Frage nach den aktuell gespeicherten Einstellungen
+- COMPARE: Vergleich bereits berechneter Varianten
+- CLARIFICATION: mehrdeutiger Änderungswunsch ohne konkreten Wert
+- GENERAL_ENGINEERING_QUESTION: allgemeine Verständnisfrage ohne Entwurfsänderung
+
+Bei CLARIFICATION setze zusätzlich `clarification_parameter` auf den
+betroffenen Parameter. Erfinde keinen Wert. Beispiele: "Querschnitt kleiner"
+ohne Abmessungen oder "Blech dicker" ohne Dicke. Bei allen anderen Intents ist
+`clarification_parameter` null.
+
+Bei EXPLAIN_RESULT, ASK_CURRENT_STATE, COMPARE und
+GENERAL_ENGINEERING_QUESTION dürfen nicht genannte technische Parameter nicht
+aus dem bisherigen Zustand als neue Änderungen ausgegeben werden. Der
+Python-Code greift selbst auf den bestehenden Conversation State zu.
+
 Beispiele für die Interpretation:
 
 - "Querschnitt 200 × 240 mm" setzt width_b_mm auf 200 und height_h_mm auf 240.

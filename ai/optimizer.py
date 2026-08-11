@@ -9,6 +9,10 @@ from calculations.stabduebel import (
     StabduebelResult,
     calculate_stabduebel,
 )
+from calculations.oenorm_validation import (
+    TechnicalValidationResult,
+    validate_oenorm,
+)
 
 
 # Fachlich festgelegter, bewusst kleiner V1-Suchraum. Andere Eingabewerte
@@ -22,6 +26,7 @@ SUPPORTED_DOWEL_DIAMETERS_MM = (12.0,)
 class EvaluatedVariant:
     input: StabduebelInput
     result: StabduebelResult
+    validation: TechnicalValidationResult
 
     @property
     def fastener_count(self) -> int:
@@ -91,15 +96,20 @@ def optimize_stabduebel(
                     result = calculate_stabduebel(candidate)
                 except (ValueError, ZeroDivisionError):
                     continue
-                evaluated.append(EvaluatedVariant(candidate, result))
+                validation = validate_oenorm(candidate, result)
+                evaluated.append(EvaluatedVariant(candidate, result, validation))
 
     feasible = [
         variant
         for variant in evaluated
-        if variant.result.passed
+        if variant.validation.admissible
+        and variant.result.passed
         and variant.result.governing_check.utilization <= max_utilization
     ]
     if not feasible:
+        inadmissible_count = sum(
+            not variant.validation.admissible for variant in evaluated
+        )
         return OptimizationResult(
             selected=None,
             evaluated=tuple(evaluated),
@@ -107,7 +117,9 @@ def optimize_stabduebel(
             feasible_count=0,
             message=(
                 f"Keine der {len(evaluated)} geprüften Varianten erfüllt "
-                f"die maximale Ausnutzung von {max_utilization:.0%}."
+                f"Norm-/Geometrieprüfung und maximale Ausnutzung von "
+                f"{max_utilization:.0%}. {inadmissible_count} Varianten sind "
+                "normativ oder geometrisch nicht zulässig."
             ),
         )
 
