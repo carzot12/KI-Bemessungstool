@@ -219,6 +219,8 @@ berechnet anschließend sämtliche Varianten.
 Beispiele für die Interpretation:
 
 - "nur Ø12" setzt dowel_diameter_d_mm auf 12.
+- "mit 2 Stahlblechen" setzt number_of_plates_ns auf 2.
+- "Blechdicke 8 mm" setzt plate_thickness_ts_mm auf 8.
 - "maximal 80 % Ausnutzung" setzt max_utilization auf 0.8.
 - "weniger Stabdübel" setzt minimize_fasteners auf true.
 - "Warum ist dieser Nachweis maßgebend?" setzt explain_governing auf true.

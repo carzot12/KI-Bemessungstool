@@ -31,6 +31,7 @@ class EvaluatedVariant:
 @dataclass(frozen=True, slots=True)
 class OptimizationResult:
     selected: EvaluatedVariant | None
+    evaluated: tuple[EvaluatedVariant, ...]
     evaluated_count: int
     feasible_count: int
     message: str
@@ -53,6 +54,7 @@ def optimize_stabduebel(
     if any(diameter not in SUPPORTED_DOWEL_DIAMETERS_MM for diameter in diameters):
         return OptimizationResult(
             selected=None,
+            evaluated=(),
             evaluated_count=0,
             feasible_count=0,
             message="Der V1-Suchraum unterstützt ausschließlich Stabdübel Ø12 mm.",
@@ -94,6 +96,7 @@ def optimize_stabduebel(
     if not feasible:
         return OptimizationResult(
             selected=None,
+            evaluated=tuple(evaluated),
             evaluated_count=len(evaluated),
             feasible_count=0,
             message=(
@@ -118,6 +121,7 @@ def optimize_stabduebel(
 
     return OptimizationResult(
         selected=selected,
+        evaluated=tuple(evaluated),
         evaluated_count=len(evaluated),
         feasible_count=len(feasible),
         message=(
