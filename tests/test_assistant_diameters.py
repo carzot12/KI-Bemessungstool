@@ -93,3 +93,127 @@ def test_explicit_warning_range_is_checked_but_not_auto_recommended() -> None:
 
     assert 25.0 not in SUPPORTED_DOWEL_DIAMETERS_MM
     assert all(item.input.dowel_diameter_d_mm == 25.0 for item in optimization.evaluated)
+
+
+def test_16_mm_followup_is_fixed_through_complete_data_flow() -> None:
+    assistant = StabduebelAssistant()
+    respond(
+        assistant,
+        "Bemesse einen Stabdübelanschluss für 140 kN mit GL24h und "
+        "möglichst wenigen Stabdübeln.",
+    )
+    extracted, _ = assistant._extract("16 mm Stabdübel")
+    reply = respond(assistant, "16 mm Stabdübel")
+
+    assert extracted["dowel_diameter_d_mm"] == 16.0
+    assert assistant.state.parameters["dowel_diameter_d_mm"] == 16.0
+    assert "dowel_diameter_d_mm" in assistant.state.fixed_parameters
+    optimization = assistant.state.last_optimization
+    assert optimization is not None
+    assert optimization.evaluated
+    assert {
+        variant.input.dowel_diameter_d_mm
+        for variant in optimization.evaluated
+    } == {16.0}
+    assert reply.result is not None
+    assert reply.result.input.dowel_diameter_d_mm == 16.0
+    assert "Ø16 mm" in reply.text
+    assert "Ø12 mm" not in reply.text
+
+
+def test_explicit_diameter_sequence_always_replaces_previous_value() -> None:
+    assistant = StabduebelAssistant()
+    respond(assistant, "140 kN GL24h, möglichst wenige Stabdübel")
+
+    for wording, expected in (
+        ("16 mm Stabdübel", 16.0),
+        ("12 mm", 12.0),
+        ("20er", 20.0),
+        ("wieder 16er", 16.0),
+    ):
+        reply = respond(assistant, wording)
+        assert assistant.state.parameters["dowel_diameter_d_mm"] == expected
+        assert "dowel_diameter_d_mm" in assistant.state.fixed_parameters
+        assert assistant.state.last_optimization is not None
+        assert all(
+            variant.input.dowel_diameter_d_mm == expected
+            for variant in assistant.state.last_optimization.evaluated
+        )
+        assert reply.result is not None
+        assert reply.result.input.dowel_diameter_d_mm == expected
+        assert f"Ø{expected:g} mm" in reply.text
+
+
+def test_all_required_16_mm_wordings_have_deterministic_priority() -> None:
+    wordings = (
+        "16 mm Stabdübel",
+        "Ø16",
+        "16er",
+        "16er Dübel",
+        "nimm 16 mm",
+        "jetzt mit 16er",
+        "ändere auf 16 mm",
+    )
+    for wording in wordings:
+        assistant = StabduebelAssistant()
+        respond(assistant, "140 kN GL24h 2 × 4 Stabdübel")
+        reply = respond(assistant, wording)
+
+        assert assistant.state.parameters["dowel_diameter_d_mm"] == 16.0
+        assert "dowel_diameter_d_mm" in assistant.state.fixed_parameters
+        assert assistant.state.last_optimization is not None
+        assert all(
+            variant.input.dowel_diameter_d_mm == 16.0
+            for variant in assistant.state.last_optimization.evaluated
+        )
+        assert reply.result is not None
+        assert reply.result.input.dowel_diameter_d_mm == 16.0
+        assert "Ø16 mm" in reply.text
+        assert "Ø12 mm" not in reply.text
+
+
+def test_deterministic_user_text_overrides_wrong_llm_diameter() -> None:
+    llm_output = {
+        key: None
+        for key in (
+            "force_ed_kn", "timber_grade", "dowel_diameter_d_mm",
+            "number_of_plates_ns", "plate_thickness_ts_mm", "width_b_mm",
+            "height_h_mm", "rows_parallel_n", "rows_perpendicular_m",
+            "total_fastener_count", "a1_mm", "a2_mm", "a3_t_mm",
+            "a4_c_mm", "e1_mm", "e2_mm", "max_utilization",
+        )
+    }
+    llm_output.update(
+        intent="OPTIMIZE",
+        clarification_parameter=None,
+        dowel_diameter_d_mm=12.0,
+        minimize_fasteners=False,
+        optimize_diameter=True,
+        explain_governing=False,
+    )
+
+    enforced = StabduebelAssistant._enforce_explicit_diameter_input(
+        "16 mm Stabdübel", llm_output
+    )
+
+    assert enforced["dowel_diameter_d_mm"] == 16.0
+    assert enforced["optimize_diameter"] is False
+    assert enforced["intent"] == "PARAMETER_CHANGE"
+
+
+def test_every_automatic_diameter_and_explicit_special_diameter_are_exact() -> None:
+    for diameter in (*SUPPORTED_DOWEL_DIAMETERS_MM, 25.0):
+        assistant = StabduebelAssistant()
+        respond(assistant, "140 kN GL24h, möglichst wenige Stabdübel")
+        reply = respond(assistant, f"Ø{diameter:g}")
+
+        assert assistant.state.parameters["dowel_diameter_d_mm"] == diameter
+        assert "dowel_diameter_d_mm" in assistant.state.fixed_parameters
+        assert assistant.state.last_optimization is not None
+        assert all(
+            variant.input.dowel_diameter_d_mm == diameter
+            for variant in assistant.state.last_optimization.evaluated
+        )
+        assert reply.result is not None
+        assert reply.result.input.dowel_diameter_d_mm == diameter
+        assert f"Ø{diameter:g} mm" in reply.text

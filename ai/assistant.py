@@ -353,6 +353,7 @@ class StabduebelAssistant:
                     },
                 )
                 extracted = self._validate_extraction(json.loads(response.output_text))
+                extracted = self._enforce_explicit_diameter_input(text, extracted)
                 extracted = self._enforce_cross_section_input(text, extracted)
                 extracted = self._enforce_explicit_fastener_input(text, extracted)
                 return self._enforce_plate_and_optimization_input(text, extracted), True
@@ -538,9 +539,59 @@ class StabduebelAssistant:
             if match:
                 data[key] = float(match.group(1))
 
+        data = self._enforce_explicit_diameter_input(text, data)
         data = self._enforce_cross_section_input(text, data)
         data = self._enforce_explicit_fastener_input(text, data)
         return self._enforce_plate_and_optimization_input(text, data)
+
+    @staticmethod
+    def _enforce_explicit_diameter_input(
+        text: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Gibt einer expliziten Durchmesserangabe immer Vorrang.
+
+        Diese deterministische Schutzschicht läuft sowohl nach dem LLM
+        Structured Output als auch im lokalen Fallback. Damit kann weder eine
+        fehlerhafte KI-Extraktion noch ein alter State den Benutzerwert
+        überschreiben.
+        """
+        number = r"(\d+(?:[.,]\d+)?)"
+        patterns = (
+            rf"(?:ø|⌀)\s*{number}\s*(?:mm)?\b",
+            rf"\b{number}\s*er(?:\s+(?:stab)?dübel\w*)?\b",
+            rf"\b{number}\s*mm\s+(?:stab)?dübel\w*\b",
+        )
+        match = next(
+            (
+                candidate
+                for pattern in patterns
+                if (candidate := re.search(pattern, text, re.IGNORECASE))
+            ),
+            None,
+        )
+
+        # In einem reinen Durchmesser-Folgeprompt ist auch "12 mm" eindeutig.
+        # Aktionsformulierungen sind ebenfalls zulässig, solange ausdrücklich
+        # kein Blech oder Querschnitt bezeichnet wird.
+        if match is None and not re.search(r"blech|querschnit", text, re.IGNORECASE):
+            match = re.search(
+                rf"(?:nimm|verwende|mit|auf|ändere\s+auf|jetzt\s+mit|wieder)\s*"
+                rf"{number}\s*mm\b",
+                text,
+                re.IGNORECASE,
+            )
+        if match is None:
+            match = re.fullmatch(rf"\s*{number}\s*mm\s*[.!]?\s*", text, re.IGNORECASE)
+
+        if match is not None:
+            data["dowel_diameter_d_mm"] = float(match.group(1).replace(",", "."))
+            # Ein ausdrücklicher Wert ist eine Parameteränderung, auch wenn das
+            # LLM fälschlich eine Durchmesseroptimierung erkannt haben sollte.
+            data["optimize_diameter"] = False
+            if data.get("intent") not in {"WHAT_IF", "MAXIMUM_LOAD"}:
+                data["intent"] = "PARAMETER_CHANGE"
+        return data
 
     @staticmethod
     def _enforce_cross_section_input(
