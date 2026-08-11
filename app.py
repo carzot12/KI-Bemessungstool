@@ -28,6 +28,7 @@ from calculations.stabduebel import (
     StabduebelResult,
     calculate_stabduebel,
 )
+from infopol.materials import TimberMaterialRepository
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -60,6 +61,8 @@ class StabduebelApp(ctk.CTk):
         self.current_page = ""
         self.last_result: StabduebelResult | None = None
         self.logo_image: ctk.CTkImage | None = None
+        self.timber_materials = TimberMaterialRepository()
+        self.timber_grade = tk.StringVar(value=StabduebelInput().timber_grade)
 
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
@@ -398,13 +401,14 @@ class StabduebelApp(ctk.CTk):
         self._entry("force_ed_kn", "Bemessungslast Ft,d [kN]")
 
         self._section("Holz")
+        self._timber_grade_dropdown()
         self._entry("width_b_mm", "Breite b [mm]")
         self._entry("height_h_mm", "Höhe h [mm]")
         self._entry("side_thickness_t1_mm", "Seitenholz t1 [mm]")
         self._entry("middle_thickness_t2_mm", "Mittelholz t2 [mm]")
-        self._entry("rho_k_kg_m3", "Rohdichte ρk [kg/m³]")
-        self._entry("ft_0_k_n_mm2", "Zugfestigkeit ft,0,k [N/mm²]")
-        self._entry("fv_k_n_mm2", "Schubfestigkeit fv,k [N/mm²]")
+        self._entry("rho_k_kg_m3", "Rohdichte ρk [kg/m³]", readonly=True)
+        self._entry("ft_0_k_n_mm2", "Zugfestigkeit ft,0,k [N/mm²]", readonly=True)
+        self._entry("fv_k_n_mm2", "Schubfestigkeit fv,k [N/mm²]", readonly=True)
 
         self._section("Stahl")
         self._entry("number_of_plates_ns", "Anzahl Bleche", integer=True)
@@ -468,6 +472,7 @@ class StabduebelApp(ctk.CTk):
         *,
         integer: bool = False,
         is_text: bool = False,
+        readonly: bool = False,
     ) -> None:
         frame = ctk.CTkFrame(self.input_panel, fg_color="transparent")
         frame.pack(fill="x", padx=10, pady=4)
@@ -498,6 +503,32 @@ class StabduebelApp(ctk.CTk):
         )
         entry.grid(row=0, column=1, sticky="e")
         self.entries[key] = entry
+        if readonly:
+            entry.configure(state="disabled")
+
+    def _timber_grade_dropdown(self) -> None:
+        frame = ctk.CTkFrame(self.input_panel, fg_color="transparent")
+        frame.pack(fill="x", padx=10, pady=4)
+        frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            frame,
+            text="Festigkeitsklasse",
+            font=ctk.CTkFont(size=12),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        ctk.CTkComboBox(
+            frame,
+            width=130,
+            height=34,
+            values=list(self.timber_materials.grades()),
+            variable=self.timber_grade,
+            state="readonly",
+            border_color=self.BORDER,
+            command=self._on_timber_grade_changed,
+        ).grid(row=0, column=1, sticky="e")
 
     # ------------------------------------------------------------------
     # Ergebnisse
@@ -528,6 +559,7 @@ class StabduebelApp(ctk.CTk):
         try:
             data = StabduebelInput(
                 project_name=self._text("project_name"),
+                timber_grade=self.timber_grade.get(),
                 force_ed_kn=self._float("force_ed_kn"),
                 width_b_mm=self._float("width_b_mm"),
                 height_h_mm=self._float("height_h_mm"),
@@ -855,9 +887,28 @@ class StabduebelApp(ctk.CTk):
         defaults = StabduebelInput()
         for key, entry in self.entries.items():
             if hasattr(defaults, key):
+                entry.configure(state="normal")
                 entry.delete(0, tk.END)
                 entry.insert(0, str(getattr(defaults, key)))
+                if key in {"rho_k_kg_m3", "ft_0_k_n_mm2", "fv_k_n_mm2"}:
+                    entry.configure(state="disabled")
+        self.timber_grade.set(defaults.timber_grade)
+        self._on_timber_grade_changed(defaults.timber_grade)
         self._draw_connection_sketch()
+
+    def _on_timber_grade_changed(self, grade: str) -> None:
+        material = self.timber_materials.get(grade)
+        values = {
+            "rho_k_kg_m3": material.value("rho_k"),
+            "ft_0_k_n_mm2": material.value("ft_0_k"),
+            "fv_k_n_mm2": material.value("fv_k"),
+        }
+        for key, value in values.items():
+            entry = self.entries[key]
+            entry.configure(state="normal")
+            entry.delete(0, tk.END)
+            entry.insert(0, str(value))
+            entry.configure(state="disabled")
 
     def _text(self, key: str) -> str:
         value = self.entries[key].get().strip()
