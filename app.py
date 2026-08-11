@@ -730,7 +730,7 @@ def main() -> None:
         app.lift()
         app.focus_force()
 
-    app.after(1600, finish_startup)
+    app.after(3000, finish_startup)
     app.mainloop()
 
 
