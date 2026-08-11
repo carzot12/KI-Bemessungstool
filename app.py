@@ -18,7 +18,13 @@ from calculations.stabduebel import (
     calculate_stabduebel,
 )
 from calculations.oenorm_validation import ValidationStatus, validate_oenorm
-from infopol.materials import TimberMaterialRepository
+from infopol.materials import (
+    KMOD_SOURCE,
+    LOAD_DURATION_CLASSES,
+    TimberMaterialRepository,
+    get_connection_gamma_m,
+    get_kmod,
+)
 
 
 ctk.set_appearance_mode("light")
@@ -120,8 +126,6 @@ class StabduebelApp(ctk.CTk):
         ("a4_c_mm", "Randabstand a4,c [mm]", "float"),
         ("e1_mm", "Stahlrandabstand e1 [mm]", "float"),
         ("e2_mm", "Stahlrandabstand e2 [mm]", "float"),
-        ("k_mod", "kmod [-]", "float"),
-        ("gamma_m_timber", "γM Holz [-]", "float"),
         ("kt_e_side", "kt,e Seitenholz [-]", "float"),
     )
 
@@ -137,6 +141,9 @@ class StabduebelApp(ctk.CTk):
         self.assistant = StabduebelAssistant()
         self.entries: dict[str, ctk.CTkEntry] = {}
         self.timber_grade = tk.StringVar(value=StabduebelInput().timber_grade)
+        self.manual_service_class = tk.StringVar(value="1")
+        self.manual_load_duration = tk.StringVar(value="mittel")
+        self.manual_kmod_text = tk.StringVar(value="automatisch: 0,80")
 
         self._build_header()
         self._build_tabs()
@@ -368,7 +375,8 @@ class StabduebelApp(ctk.CTk):
         form.grid_columnconfigure(0, weight=1)
 
         self._manual_material_row(form)
-        for row, (key, label, kind) in enumerate(self.MANUAL_FIELDS, start=1):
+        self._manual_design_condition_rows(form)
+        for row, (key, label, kind) in enumerate(self.MANUAL_FIELDS, start=4):
             ctk.CTkLabel(form, text=label, text_color=self.TEXT, anchor="w").grid(
                 row=row, column=0, sticky="w", padx=12, pady=5
             )
@@ -377,7 +385,7 @@ class StabduebelApp(ctk.CTk):
             entry._value_kind = kind  # type: ignore[attr-defined]
             self.entries[key] = entry
 
-        button_row = len(self.MANUAL_FIELDS) + 1
+        button_row = len(self.MANUAL_FIELDS) + 4
         ctk.CTkButton(
             form,
             text="Nachweis berechnen",
@@ -475,7 +483,48 @@ class StabduebelApp(ctk.CTk):
             variable=self.timber_grade,
             state="readonly",
             border_color=self.BORDER,
+            command=lambda _value: self._update_manual_kmod(),
         ).grid(row=0, column=1, sticky="e", padx=12, pady=5)
+
+    def _manual_design_condition_rows(self, form: ctk.CTkScrollableFrame) -> None:
+        for row, label in ((1, "Nutzungsklasse"), (2, "Lasteinwirkungsdauer"), (3, "kmod")):
+            ctk.CTkLabel(form, text=label, text_color=self.TEXT, anchor="w").grid(
+                row=row, column=0, sticky="w", padx=12, pady=5
+            )
+        ctk.CTkComboBox(
+            form,
+            width=170,
+            values=["1", "2", "3"],
+            variable=self.manual_service_class,
+            state="readonly",
+            border_color=self.BORDER,
+            command=lambda _value: self._update_manual_kmod(),
+        ).grid(row=1, column=1, sticky="e", padx=12, pady=5)
+        ctk.CTkComboBox(
+            form,
+            width=170,
+            values=list(LOAD_DURATION_CLASSES),
+            variable=self.manual_load_duration,
+            state="readonly",
+            border_color=self.BORDER,
+            command=lambda _value: self._update_manual_kmod(),
+        ).grid(row=2, column=1, sticky="e", padx=12, pady=5)
+        ctk.CTkLabel(
+            form,
+            textvariable=self.manual_kmod_text,
+            text_color=self.MUTED,
+            anchor="e",
+        ).grid(row=3, column=1, sticky="e", padx=12, pady=5)
+
+    def _update_manual_kmod(self) -> float:
+        material = self.materials.get(self.timber_grade.get())
+        value = get_kmod(
+            material,
+            int(self.manual_service_class.get()),
+            self.manual_load_duration.get(),
+        )
+        self.manual_kmod_text.set(f"automatisch: {value:.2f}".replace(".", ","))
+        return value
 
     def _send_to_assistant(self) -> None:
         text = self.assistant_entry.get().strip()
@@ -553,7 +602,10 @@ class StabduebelApp(ctk.CTk):
                 f"Ø{data.dowel_diameter_d_mm:g} mm\n"
                 f"Stahlbleche: {data.number_of_plates_ns} · "
                 f"Dicke {data.plate_thickness_ts_mm:g} mm\n"
-                f"Holzklasse: {data.timber_grade}"
+                f"Holzklasse: {data.timber_grade}\n"
+                f"Nutzungsklasse: {data.service_class}\n"
+                f"Lasteinwirkungsdauer: {data.load_duration_class}\n"
+                f"kmod: {data.k_mod:g} · automatisch nach {KMOD_SOURCE}"
                 + (
                     "\nValidierung: "
                     + "; ".join(check.name for check in validation.failures)
@@ -585,9 +637,12 @@ class StabduebelApp(ctk.CTk):
     def _load_manual_defaults(self) -> None:
         defaults = StabduebelInput()
         self.timber_grade.set(defaults.timber_grade)
+        self.manual_service_class.set(str(defaults.service_class))
+        self.manual_load_duration.set(defaults.load_duration_class)
         for key, entry in self.entries.items():
             entry.delete(0, "end")
             entry.insert(0, str(getattr(defaults, key)))
+        self._update_manual_kmod()
 
     def _calculate_manual(self) -> None:
         try:
@@ -603,6 +658,10 @@ class StabduebelApp(ctk.CTk):
             material = self.materials.get(grade)
             values.update(
                 timber_grade=grade,
+                service_class=int(self.manual_service_class.get()),
+                load_duration_class=self.manual_load_duration.get(),
+                k_mod=self._update_manual_kmod(),
+                gamma_m_timber=get_connection_gamma_m(),
                 rho_k_kg_m3=material.value("rho_k"),
                 ft_0_k_n_mm2=material.value("ft_0_k"),
                 fv_k_n_mm2=material.value("fv_k"),
@@ -640,6 +699,9 @@ class StabduebelApp(ctk.CTk):
                 f"Scherfugen: {data.shear_planes_s}\n"
                 f"Rechenmodell: {data.connection_model}\n"
                 f"Holzklasse: {data.timber_grade}\n"
+                f"Nutzungsklasse: {data.service_class}\n"
+                f"Lasteinwirkungsdauer: {data.load_duration_class}\n"
+                f"kmod: {data.k_mod:g} · automatisch nach {KMOD_SOURCE}\n"
                 f"Querschnitt: {data.width_b_mm:g} × {data.height_h_mm:g} mm\n"
                 f"Stabdübel: {data.rows_parallel_n} × "
                 f"{data.rows_perpendicular_m} = {count} · "
@@ -670,6 +732,10 @@ class StabduebelApp(ctk.CTk):
             f"Scherfugen: {result.input.shear_planes_s}",
             f"Rechenmodell: {result.input.connection_model}",
             f"Holzklasse: {result.input.timber_grade}",
+            f"Nutzungsklasse: {result.input.service_class}",
+            f"Lasteinwirkungsdauer: {result.input.load_duration_class}",
+            f"kmod: {result.input.k_mod:g}",
+            f"Quelle kmod: automatisch nach {KMOD_SOURCE}",
             f"Last: {result.input.force_ed_kn:.2f} kN",
             f"Anordnung: {result.input.rows_parallel_n} × "
             f"{result.input.rows_perpendicular_m} = "

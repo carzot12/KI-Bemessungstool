@@ -51,7 +51,9 @@ def optimize_stabduebel(
     *,
     fixed_parameters: set[str] | None = None,
     max_utilization: float = 1.0,
+    min_utilization: float = 0.0,
     minimize_fasteners: bool = True,
+    maximize_utilization: bool = False,
     required_fastener_count: int | None = None,
 ) -> OptimizationResult:
     """Prüft den V1-Suchraum ausschließlich mit ``calculate_stabduebel``."""
@@ -161,6 +163,7 @@ def optimize_stabduebel(
         for variant in evaluated
         if variant.validation.admissible
         and variant.result.passed
+        and variant.result.governing_check.utilization >= min_utilization
         and variant.result.governing_check.utilization <= max_utilization
     ]
     if not feasible:
@@ -180,7 +183,15 @@ def optimize_stabduebel(
             ),
         )
 
-    if minimize_fasteners:
+    if maximize_utilization:
+        selected = max(
+            feasible,
+            key=lambda item: (
+                item.result.governing_check.utilization,
+                -item.fastener_count,
+            ),
+        )
+    elif minimize_fasteners:
         selected = min(
             feasible,
             key=lambda item: (

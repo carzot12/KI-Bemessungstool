@@ -92,6 +92,8 @@ class StabduebelInput:
     e2_mm: float = 20.0
 
     # Holzkennwerte
+    service_class: int = 1
+    load_duration_class: str = "mittel"
     rho_k_kg_m3: float = 385.0
     ft_0_k_n_mm2: float = 19.2
     fv_k_n_mm2: float = 3.5

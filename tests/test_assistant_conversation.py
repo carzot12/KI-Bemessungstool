@@ -7,6 +7,14 @@ from ai.assistant import StabduebelAssistant
 
 
 def respond(assistant: StabduebelAssistant, prompt: str):
+    assistant.state.parameters.setdefault("service_class", 1)
+    assistant.state.parameters.setdefault("load_duration_class", "mittel")
+    assistant.state.fixed_parameters.update({"service_class", "load_duration_class"})
+    assistant.state.parameters.update(width_b_mm=200.0, height_h_mm=240.0)
+    assistant.state.parameters.setdefault("number_of_plates_ns", 2)
+    assistant.state.parameters.setdefault("plate_thickness_ts_mm", 6.0)
+    assistant._set_connection_state(int(assistant.state.parameters["number_of_plates_ns"]))
+    assistant.state.minimize_fasteners = True
     with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
         return assistant.respond(prompt)
 

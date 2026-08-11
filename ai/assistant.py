@@ -16,7 +16,13 @@ from calculations.stabduebel import (
     calculate_stabduebel,
 )
 from calculations.oenorm_validation import validate_oenorm
-from infopol.materials import TimberMaterialRepository
+from infopol.materials import (
+    KMOD_SOURCE,
+    TimberMaterialRepository,
+    get_connection_gamma_m,
+    get_kmod,
+    normalize_load_duration,
+)
 
 from .optimizer import (
     SUPPORTED_DOWEL_DIAMETERS_MM,
@@ -50,6 +56,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                 "force_ed_kn", "timber_grade", "cross_section",
                 "dowel_diameter_d_mm", "number_of_plates_ns",
                 "plate_thickness_ts_mm", "arrangement", None,
+                "service_class", "load_duration_class",
             ],
         },
         "force_ed_kn": {"type": ["number", "null"]},
@@ -57,6 +64,11 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "dowel_diameter_d_mm": {"type": ["number", "null"]},
         "number_of_plates_ns": {"type": ["integer", "null"]},
         "plate_thickness_ts_mm": {"type": ["number", "null"]},
+        "service_class": {"type": ["integer", "null"]},
+        "load_duration_class": {
+            "type": ["string", "null"],
+            "enum": ["ständig", "lang", "mittel", "kurz", "sehr kurz", None],
+        },
         "width_b_mm": {"type": ["number", "null"]},
         "height_h_mm": {"type": ["number", "null"]},
         "rows_parallel_n": {"type": ["integer", "null"]},
@@ -69,7 +81,10 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "e1_mm": {"type": ["number", "null"]},
         "e2_mm": {"type": ["number", "null"]},
         "max_utilization": {"type": ["number", "null"]},
+        "min_utilization": {"type": ["number", "null"]},
         "minimize_fasteners": {"type": "boolean"},
+        "maximize_utilization": {"type": "boolean"},
+        "top_n": {"type": ["integer", "null"]},
         "optimize_diameter": {"type": "boolean"},
         "explain_governing": {"type": "boolean"},
     },
@@ -81,6 +96,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "dowel_diameter_d_mm",
         "number_of_plates_ns",
         "plate_thickness_ts_mm",
+        "service_class", "load_duration_class",
         "width_b_mm",
         "height_h_mm",
         "rows_parallel_n",
@@ -88,7 +104,10 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "total_fastener_count",
         "a1_mm", "a2_mm", "a3_t_mm", "a4_c_mm", "e1_mm", "e2_mm",
         "max_utilization",
+        "min_utilization",
         "minimize_fasteners",
+        "maximize_utilization",
+        "top_n",
         "optimize_diameter",
         "explain_governing",
     ],
@@ -106,8 +125,11 @@ class ConversationState:
     last_result: StabduebelResult | None = None
     last_optimization: OptimizationResult | None = None
     pending_clarification: str | None = None
-    connection_type: str = MULTI_SHEAR_TWO_INTERNAL_PLATES
-    shear_planes_s: int = 4
+    connection_type: str | None = None
+    shear_planes_s: int = 0
+    maximize_utilization: bool = False
+    min_utilization: float = 0.0
+    requested_top_n: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +157,12 @@ class StabduebelAssistant:
     def respond(self, user_text: str) -> AssistantReply:
         if not user_text.strip():
             raise ValueError("Bitte eine Anforderung eingeben.")
+        if re.search(
+            r"\b(?:neue|neuen|neuer)\s+(?:bemessung|entwurf|verbindung)\b",
+            user_text,
+            re.IGNORECASE,
+        ):
+            self.reset()
         if re.search(r"\beinschnittig(?:e|en|er|es)?\b", user_text, re.IGNORECASE):
             text = (
                 "Mit ‚einschnittig‘ ist der Anschlussfall noch nicht eindeutig. "
@@ -154,6 +182,24 @@ class StabduebelAssistant:
             return self._undo_reply(used_llm)
 
         if intent in {"CLARIFICATION", "CLARIFICATION_REQUIRED"}:
+            explicit_values = any(
+                extracted.get(key) is not None
+                for key in (
+                    "force_ed_kn", "timber_grade", "dowel_diameter_d_mm",
+                    "number_of_plates_ns", "plate_thickness_ts_mm",
+                    "service_class", "load_duration_class", "width_b_mm",
+                    "height_h_mm", "rows_parallel_n", "rows_perpendicular_m",
+                    "total_fastener_count",
+                )
+            )
+            if explicit_values:
+                self._apply(extracted)
+                missing = self._missing_required_parameters()
+                question = self._missing_parameter_question(missing)
+                return AssistantReply(
+                    question, self.state.last_result, used_llm,
+                    self._recognized_parameters(self.state.last_result), question,
+                )
             parameter = extracted.get("clarification_parameter")
             self.state.pending_clarification = str(parameter) if parameter else None
             question = self._clarification_question(self.state.pending_clarification)
@@ -232,14 +278,7 @@ class StabduebelAssistant:
                 self._recognized_parameters(self.state.last_result), text,
             )
 
-        missing = [
-            label
-            for key, label in (
-                ("force_ed_kn", "Bemessungslast"),
-                ("timber_grade", "Holzfestigkeitsklasse"),
-            )
-            if key not in self.state.parameters
-        ]
+        missing = self._missing_required_parameters()
         if missing:
             return AssistantReply(
                 self._missing_parameter_question(missing),
@@ -263,7 +302,9 @@ class StabduebelAssistant:
             base_input,
             fixed_parameters=run_fixed,
             max_utilization=self.state.max_utilization,
+            min_utilization=self.state.min_utilization,
             minimize_fasteners=self.state.minimize_fasteners,
+            maximize_utilization=self.state.maximize_utilization,
             required_fastener_count=self.state.requested_fastener_count,
         )
         self.state.last_optimization = optimization
@@ -313,14 +354,54 @@ class StabduebelAssistant:
         self._undo_state = state_before_change
         if intent == "WHAT_IF" and previous_result is not None:
             self._comparison_results = [previous_result, selected.result]
+        ranking = self._ranked_variants_text(optimization)
         return AssistantReply(
             self._format_result(selected.result, optimization, intent, extracted)
-            + (self._what_if_delta(previous_result, selected.result) if intent == "WHAT_IF" else ""),
+            + (self._what_if_delta(previous_result, selected.result) if intent == "WHAT_IF" else "")
+            + ranking,
             selected.result,
             used_llm,
             self._recognized_parameters(selected.result),
             self._interpret_result(selected.result, optimization),
         )
+
+    def _ranked_variants_text(self, optimization: OptimizationResult) -> str:
+        if self.state.requested_top_n is None:
+            return ""
+        feasible = [
+            item for item in optimization.evaluated
+            if item.validation.admissible
+            and item.result.passed
+            and self.state.min_utilization
+            <= item.result.governing_check.utilization
+            <= self.state.max_utilization
+        ]
+        if self.state.maximize_utilization:
+            feasible.sort(
+                key=lambda item: item.result.governing_check.utilization,
+                reverse=True,
+            )
+        else:
+            feasible.sort(
+                key=lambda item: (
+                    item.fastener_count,
+                    item.result.governing_check.utilization,
+                )
+            )
+        lines = ["\n\nBeste tatsächlich berechnete Varianten:"]
+        for index, item in enumerate(
+            feasible[: self.state.requested_top_n], start=1
+        ):
+            data = item.input
+            lines.append(
+                f"{index}. {data.rows_parallel_n} × {data.rows_perpendicular_m} = "
+                f"{item.fastener_count}, Ø{data.dowel_diameter_d_mm:g} mm, "
+                f"Ausnutzung {item.result.governing_check.utilization:.0%}, "
+                f"maßgebend „{item.result.governing_check.name}“"
+            )
+        if len(lines) == 1:
+            lines.append("Keine Variante erfüllt die gesetzten Randbedingungen.")
+        return "\n".join(lines)
 
     def _extract(self, text: str) -> tuple[dict[str, Any], bool]:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -383,6 +464,8 @@ class StabduebelAssistant:
             "dowel_diameter_d_mm": None,
             "number_of_plates_ns": None,
             "plate_thickness_ts_mm": None,
+            "service_class": None,
+            "load_duration_class": None,
             "width_b_mm": None,
             "height_h_mm": None,
             "rows_parallel_n": None,
@@ -395,9 +478,12 @@ class StabduebelAssistant:
             "e1_mm": None,
             "e2_mm": None,
             "max_utilization": None,
+            "min_utilization": None,
             "minimize_fasteners": bool(
                 re.search(r"weniger|möglichst\s+wenig|so\s+wenig", normalized)
             ),
+            "maximize_utilization": False,
+            "top_n": None,
             "optimize_diameter": bool(
                 re.search(
                     r"welcher\s+(?:stab)?dübel(?:durchmesser)?|"
@@ -421,6 +507,8 @@ class StabduebelAssistant:
             data["intent"] = "ASK_CURRENT_STATE"
         elif re.search(r"vergleich", normalized):
             data["intent"] = "COMPARE"
+        elif re.search(r"(?:welchen|welcher).*k\s*mod|warum.*k\s*mod", normalized):
+            data["intent"] = "GENERAL_ENGINEERING_QUESTION"
         elif re.search(r"was\s+(?:ist|bedeutet).*n[_\s-]?eff", normalized):
             data["intent"] = "GENERAL_ENGINEERING_QUESTION"
         elif (
@@ -519,6 +607,12 @@ class StabduebelAssistant:
             r"(?:blechdicke|blechstärke|blech)\s*(?:von\s*)?(\d+(?:\.\d+)?)\s*mm",
             normalized,
         )
+        if not plate_thickness:
+            plate_thickness = re.search(
+                r"(\d+(?:\.\d+)?)\s*mm\s*(?:blechdicke|blechstärke|"
+                r"(?:dicke[snr]?\s+)?stahlblech)",
+                normalized,
+            )
         if plate_thickness:
             data["plate_thickness_ts_mm"] = float(plate_thickness.group(1))
 
@@ -529,6 +623,63 @@ class StabduebelAssistant:
         if utilization:
             data["max_utilization"] = float(utilization.group(1)) / 100.0
             data["intent"] = "TARGET_UTILIZATION"
+
+        utilization_range = re.search(
+            r"zwischen\s+(\d+(?:\.\d+)?)\s*(?:%|prozent)?\s+und\s+"
+            r"(\d+(?:\.\d+)?)\s*(?:%|prozent)",
+            normalized,
+        )
+        if utilization_range:
+            data["min_utilization"] = float(utilization_range.group(1)) / 100.0
+            data["max_utilization"] = float(utilization_range.group(2)) / 100.0
+            data["maximize_utilization"] = True
+            data["intent"] = "OPTIMIZE"
+        eta_limit = re.search(
+            r"(?:eta|η)\s*(?:<=|≤|unter|maximal)\s*(0(?:\.\d+)?|1(?:\.0+)?)",
+            normalized,
+        )
+        if eta_limit:
+            data["max_utilization"] = float(eta_limit.group(1))
+            data["intent"] = "TARGET_UTILIZATION"
+        if re.search(
+            r"höchste.*(?:zulässige\s+)?ausnutzung|nahe.*100|"
+            r"material.*(?:best|optimal).*ausnutz",
+            normalized,
+        ):
+            if data["max_utilization"] is None:
+                data["max_utilization"] = 1.0
+            if data["min_utilization"] is None:
+                data["min_utilization"] = 0.0
+            data["maximize_utilization"] = True
+            data["intent"] = "OPTIMIZE"
+        top_n = re.search(r"(?:zeig|zeige).*?(\d+)\s+besten\s+varianten", normalized)
+        if top_n:
+            data["top_n"] = int(top_n.group(1))
+            data["intent"] = "OPTIMIZE"
+        if re.search(
+            r"welche\s+varianten.*(?:gehen|möglich)|zeig.*alternativen",
+            normalized,
+        ):
+            data["intent"] = "OPTIMIZE"
+
+        service_class = re.search(
+            r"\b(?:nutzungsklasse|nk|service\s*class)\s*([123])\b",
+            normalized,
+        )
+        if service_class:
+            data["service_class"] = int(service_class.group(1))
+
+        duration_patterns = (
+            ("sehr kurz", r"\bsehr\s+kurz(?:e|en|er|em)?(?:\s+lasteinwirkungsdauer|\s+einwirkung)?\b"),
+            ("ständig", r"\b(?:ständig|staendig)(?:e|en|er|em)?(?:\s+einwirkung)?\b"),
+            ("mittel", r"\bmitt(?:el|lere|leren|lerer|lerem)(?:\s+lasteinwirkungsdauer|\s+einwirkung)?\b"),
+            ("kurz", r"\bkurz(?:e|en|er|em)?(?:\s+lasteinwirkungsdauer|\s+einwirkung)?\b"),
+            ("lang", r"\blang(?:e|en|er|em)?(?:\s+lasteinwirkungsdauer|\s+einwirkung)?\b"),
+        )
+        for duration, pattern in duration_patterns:
+            if re.search(pattern, normalized):
+                data["load_duration_class"] = duration
+                break
 
         distance_names = {
             "a1_mm": r"a1", "a2_mm": r"a2", "a3_t_mm": r"a3\s*,?\s*t",
@@ -556,6 +707,14 @@ class StabduebelAssistant:
         fehlerhafte KI-Extraktion noch ein alter State den Benutzerwert
         überschreiben.
         """
+        mentioned = re.findall(
+            r"(?:ø|⌀)\s*\d+(?:[.,]\d+)?|\b\d+(?:[.,]\d+)?er\b",
+            text,
+            re.IGNORECASE,
+        )
+        if len(mentioned) >= 2:
+            data["intent"] = "COMPARE"
+
         number = r"(\d+(?:[.,]\d+)?)"
         patterns = (
             rf"(?:ø|⌀)\s*{number}\s*(?:mm)?\b",
@@ -589,7 +748,7 @@ class StabduebelAssistant:
             # Ein ausdrücklicher Wert ist eine Parameteränderung, auch wenn das
             # LLM fälschlich eine Durchmesseroptimierung erkannt haben sollte.
             data["optimize_diameter"] = False
-            if data.get("intent") not in {"WHAT_IF", "MAXIMUM_LOAD"}:
+            if data.get("intent") not in {"WHAT_IF", "MAXIMUM_LOAD", "COMPARE"}:
                 data["intent"] = "PARAMETER_CHANGE"
         return data
 
@@ -649,15 +808,6 @@ class StabduebelAssistant:
         data: dict[str, Any],
     ) -> dict[str, Any]:
         """Übernimmt explizites n × m wortgetreu, unabhängig vom LLM."""
-        # Zahlenpaare mit mm/cm sind Querschnitte und keine Dübelanordnung.
-        if re.search(
-            r"\b\d+(?:[.,]\d+)?\s*(?:x|×|✕|/)\s*"
-            r"\d+(?:[.,]\d+)?\s*(?:mm|cm)\b",
-            text,
-            re.IGNORECASE,
-        ):
-            return data
-
         # Ein als Querschnitt bezeichnetes Zahlenpaar ohne Einheit ist keine
         # Dübelanordnung. Die Einheit muss zunächst geklärt werden.
         if re.search(r"querschnit", text, re.IGNORECASE) and re.search(
@@ -665,13 +815,25 @@ class StabduebelAssistant:
             text,
             re.IGNORECASE,
         ):
-            data["intent"] = "CLARIFICATION_REQUIRED"
-            data["clarification_parameter"] = "cross_section"
-            data["width_b_mm"] = None
-            data["height_h_mm"] = None
-            return data
+            if data.get("width_b_mm") is None or data.get("height_h_mm") is None:
+                data["intent"] = "CLARIFICATION_REQUIRED"
+                data["clarification_parameter"] = "cross_section"
+                data["width_b_mm"] = None
+                data["height_h_mm"] = None
+                return data
 
-        arrangement = re.search(r"\b(\d+)\s*[x×✕]\s*(\d+)\b", text, re.IGNORECASE)
+        arrangement = None
+        for candidate in re.finditer(
+            r"\b(\d+)\s*[x×✕]\s*(\d+)\b", text, re.IGNORECASE
+        ):
+            suffix = text[candidate.end():candidate.end() + 8]
+            prefix = text[max(0, candidate.start() - 15):candidate.start()]
+            if re.match(r"\s*(?:mm|cm)\b", suffix, re.IGNORECASE):
+                continue
+            if re.search(r"querschnit\w*\s*$", prefix, re.IGNORECASE):
+                continue
+            arrangement = candidate
+            break
         if arrangement:
             rows_parallel = int(arrangement.group(1))
             rows_perpendicular = int(arrangement.group(2))
@@ -705,13 +867,21 @@ class StabduebelAssistant:
             text,
             re.IGNORECASE,
         ) or re.search(
-            r"\b(?:1|ein(?:e|em|en|er|es)?)\s+innenliegende[snr]?\s+blech\b|"
+            r"\b(?:1|ein(?:e|em|en|er|es)?)\s+innenliegende[snr]?\s+"
+            r"(?:stahl)?blech\b|"
             r"\bnur\s+(?:1|ein(?:e|em|en|er|es)?)\s+blech\b",
             text,
             re.IGNORECASE,
         )
         if one_plate:
             data["number_of_plates_ns"] = 1
+        two_plates = re.search(
+            r"\b(?:2|zwei)\s+(?:innenliegende[snr]?\s+)?(?:stahl)?blech(?:e|en)?\b",
+            text,
+            re.IGNORECASE,
+        )
+        if two_plates:
+            data["number_of_plates_ns"] = 2
         if re.search(
             r"holz\s*[-|]\s*stahl(?:blech)?\s*[-|]\s*holz|"
             r"holz\s+stahl(?:blech)?\s+holz|"
@@ -765,6 +935,7 @@ class StabduebelAssistant:
             "plate_thickness_ts_mm",
             "width_b_mm",
             "height_h_mm",
+            "service_class", "load_duration_class",
             "a1_mm", "a2_mm", "a3_t_mm", "a4_c_mm", "e1_mm", "e2_mm",
         ):
             value = extracted.get(key)
@@ -779,8 +950,19 @@ class StabduebelAssistant:
             if not 0.0 < maximum <= 1.0:
                 raise ValueError("Die maximale Ausnutzung muss zwischen 0 und 100 % liegen.")
             self.state.max_utilization = maximum
+        if extracted.get("min_utilization") is not None:
+            minimum = float(extracted["min_utilization"])
+            if not 0.0 <= minimum <= 1.0:
+                raise ValueError("Die minimale Ausnutzung muss zwischen 0 und 100 % liegen.")
+            self.state.min_utilization = minimum
         if extracted.get("minimize_fasteners"):
             self.state.minimize_fasteners = True
+            self.state.maximize_utilization = False
+        if extracted.get("maximize_utilization"):
+            self.state.maximize_utilization = True
+            self.state.minimize_fasteners = False
+        if extracted.get("top_n") is not None:
+            self.state.requested_top_n = max(1, min(int(extracted["top_n"]), 20))
         if extracted.get("optimize_diameter"):
             self.state.fixed_parameters.discard("dowel_diameter_d_mm")
 
@@ -806,6 +988,12 @@ class StabduebelAssistant:
             rho_k_kg_m3=material.value("rho_k"),
             ft_0_k_n_mm2=material.value("ft_0_k"),
             fv_k_n_mm2=material.value("fv_k"),
+            k_mod=get_kmod(
+                material,
+                int(defaults["service_class"]),
+                str(defaults["load_duration_class"]),
+            ),
+            gamma_m_timber=get_connection_gamma_m(),
         )
         return StabduebelInput(**defaults)
 
@@ -855,27 +1043,41 @@ class StabduebelAssistant:
             return self.state.parameters[key]
         if self.state.last_result is not None:
             return getattr(self.state.last_result.input, key)
-        defaults = StabduebelInput()
-        return getattr(defaults, key, None)
+        return None
 
     def _clarification_question(self, parameter: str | None) -> str:
         if parameter == "cross_section":
             width = self._current_value("width_b_mm")
             height = self._current_value("height_h_mm")
+            current = (
+                f"Aktuell sind {float(width):g} × {float(height):g} mm eingestellt."
+                if width is not None and height is not None
+                else "Aktuell ist noch kein Holzquerschnitt festgelegt."
+            )
             return (
                 "Gerne. Welche Abmessungen möchtest du verwenden? "
-                f"Aktuell sind {float(width):g} × {float(height):g} mm eingestellt."
+                + current
             )
         if parameter == "plate_thickness_ts_mm":
             thickness = self._current_value("plate_thickness_ts_mm")
             return (
-                f"Aktuell ist das Blech {float(thickness):g} mm dick. "
+                (
+                    f"Aktuell ist das Blech {float(thickness):g} mm dick. "
+                    if thickness is not None else
+                    "Aktuell ist noch keine Blechdicke festgelegt. "
+                )
+                +
                 "Welche Blechdicke möchtest du verwenden?"
             )
         if parameter == "dowel_diameter_d_mm":
             diameter = self._current_value("dowel_diameter_d_mm")
             return (
-                f"Aktuell ist Ø{float(diameter):g} mm eingestellt. "
+                (
+                    f"Aktuell ist Ø{float(diameter):g} mm eingestellt. "
+                    if diameter is not None else
+                    "Aktuell ist noch kein Stabdübeldurchmesser festgelegt. "
+                )
+                +
                 "Welchen Stabdübeldurchmesser möchtest du verwenden?"
             )
         if parameter == "number_of_plates_ns":
@@ -888,69 +1090,147 @@ class StabduebelAssistant:
             return "Welche Holzfestigkeitsklasse möchtest du verwenden?"
         if parameter == "force_ed_kn":
             return "Welche Bemessungszugkraft in kN soll angesetzt werden?"
+        if parameter == "service_class":
+            return "Welche Nutzungsklasse (1, 2 oder 3) soll verwendet werden?"
+        if parameter == "load_duration_class":
+            return (
+                "Welche Klasse der Lasteinwirkungsdauer soll verwendet werden: "
+                "ständig, lang, mittel, kurz oder sehr kurz?"
+            )
         if parameter == "arrangement":
             return "Welche feste Anordnung n × m möchtest du vorgeben?"
         return "Welche konkrete technische Vorgabe möchtest du ändern?"
 
     def _missing_parameter_question(self, missing: list[str]) -> str:
-        known: list[str] = []
-        if "force_ed_kn" in self.state.parameters:
-            known.append(f"{float(self.state.parameters['force_ed_kn']):g} kN")
-        if "timber_grade" in self.state.parameters:
-            known.append(str(self.state.parameters["timber_grade"]))
-        prefix = "Alles klar"
-        if known:
-            prefix += " – " + " und ".join(known) + " habe ich übernommen"
-        if missing == ["Holzfestigkeitsklasse"]:
-            return prefix + ". Welche Holzfestigkeitsklasse möchtest du verwenden?"
-        if missing == ["Bemessungslast"]:
-            return prefix + ". Welche Bemessungszugkraft in kN soll ich ansetzen?"
-        return (
-            prefix + ". Für den Start brauche ich noch Bemessungszugkraft und "
-            "Holzfestigkeitsklasse."
+        lines = ["Übernommen. Für die Bemessung brauche ich noch:"]
+        lines.extend(f"• {item}" for item in missing)
+        lines.append("Du kannst mir die Angaben einfach in einem Satz nennen.")
+        return "\n".join(lines)
+
+    def _missing_required_parameters(self) -> list[str]:
+        required = (
+            ("force_ed_kn", "Bemessungslast Fd"),
+            ("timber_grade", "Holzfestigkeitsklasse"),
+            ("width_b_mm", "Holzquerschnitt b × h"),
+            ("number_of_plates_ns", "Anschlussaufbau / innenliegende Stahlbleche"),
+            ("plate_thickness_ts_mm", "Stahlblechdicke"),
+            ("service_class", "Nutzungsklasse"),
+            ("load_duration_class", "Klasse der Lasteinwirkungsdauer"),
         )
+        missing = [
+            label for key, label in required
+            if key not in self.state.parameters
+            or (key == "width_b_mm" and "height_h_mm" not in self.state.parameters)
+        ]
+        if not self.state.minimize_fasteners and not self.state.maximize_utilization:
+            if "dowel_diameter_d_mm" not in self.state.fixed_parameters:
+                missing.append(
+                    "Stabdübeldurchmesser oder ausdrückliches Optimierungsziel"
+                )
+            fixed_arrangement = {
+                "rows_parallel_n", "rows_perpendicular_m"
+            }.issubset(self.state.fixed_parameters)
+            if not fixed_arrangement and self.state.requested_fastener_count is None:
+                missing.append(
+                    "Stabdübelanzahl/Anordnung oder ausdrückliches Optimierungsziel"
+                )
+        return missing
 
     def _current_state_text(self) -> str:
         result_input = self.state.last_result.input if self.state.last_result else None
-
-        def value(key: str, default: str = "noch offen") -> str:
-            current = self.state.parameters.get(key)
-            if current is None and result_input is not None:
-                current = getattr(result_input, key)
-            return default if current is None else f"{current:g}" if isinstance(current, float) else str(current)
-
-        lines = [
-            "Aktueller Entwurf:",
-            f"- Verbindungstyp: {result_input.connection_case if result_input else 'noch offen'}",
-            f"- Last: {value('force_ed_kn')} kN",
-            f"- Holz: {value('timber_grade')}",
+        p = self.state.parameters
+        lines = ["Benutzervorgaben:"]
+        user_values = [
+            ("Last", f"{float(p['force_ed_kn']):g} kN" if "force_ed_kn" in p else None),
+            ("Holz", str(p["timber_grade"]) if "timber_grade" in p else None),
+            (
+                "Querschnitt",
+                f"{float(p['width_b_mm']):g} × {float(p['height_h_mm']):g} mm"
+                if {"width_b_mm", "height_h_mm"} <= p.keys() else None,
+            ),
+            (
+                "Anschluss",
+                (
+                    TWO_SHEAR_ONE_INTERNAL_PLATE
+                    if p.get("number_of_plates_ns") == 1
+                    else MULTI_SHEAR_TWO_INTERNAL_PLATES
+                )
+                if "number_of_plates_ns" in p else None,
+            ),
+            (
+                "Stahlbleche",
+                str(p["number_of_plates_ns"])
+                if "number_of_plates_ns" in p else None,
+            ),
+            (
+                "Stahlblechdicke",
+                f"{float(p['plate_thickness_ts_mm']):g} mm"
+                if "plate_thickness_ts_mm" in p else None,
+            ),
+            ("Nutzungsklasse", str(p["service_class"]) if "service_class" in p else None),
+            (
+                "Lasteinwirkungsdauer",
+                str(p["load_duration_class"]) if "load_duration_class" in p else None,
+            ),
+            (
+                "Stabdübeldurchmesser",
+                f"Ø{float(p['dowel_diameter_d_mm']):g} mm"
+                if "dowel_diameter_d_mm" in p else None,
+            ),
         ]
-        width = value("width_b_mm")
-        height = value("height_h_mm")
-        lines.append(f"- Querschnitt: {width} × {height} mm")
-        lines.extend([
-            f"- Stahlbleche: {value('number_of_plates_ns')}",
-            f"- Blechdicke: {value('plate_thickness_ts_mm')} mm",
-            f"- Stabdübel: Ø{value('dowel_diameter_d_mm')} mm",
-        ])
+        lines.extend(f"- {label}: {value}" for label, value in user_values if value is not None)
+        if len(lines) == 1:
+            lines.append("- noch keine")
         if result_input is not None:
             count = result_input.rows_parallel_n * result_input.rows_perpendicular_m
             lines.append(
                 f"- Anordnung: {result_input.rows_parallel_n} × "
                 f"{result_input.rows_perpendicular_m} = {count} Stabdübel"
             )
-        objective = "minimale Stabdübelanzahl" if self.state.minimize_fasteners else "geringe Ausnutzung"
-        if self.state.max_utilization < 1.0:
-            objective += f", maximal {self.state.max_utilization:.0%}"
-        lines.append(f"- Optimierungsziel: {objective}")
-        if self.state.fixed_parameters:
+
+        lines.append("\nNormativ abgeleitet:")
+        if result_input is not None:
+            lines.append(f"- kmod: {result_input.k_mod:g} · {KMOD_SOURCE}")
+        else:
+            lines.append("- kmod: noch nicht bestimmbar")
+
+        lines.append("\nOptimierungsvariablen:")
+        variables: list[str] = []
+        if "dowel_diameter_d_mm" not in self.state.fixed_parameters:
+            variables.append("Durchmesser")
+        if not {"rows_parallel_n", "rows_perpendicular_m"} <= self.state.fixed_parameters:
+            variables.extend(["Anzahl", "Anordnung"])
+        lines.append("- " + (", ".join(variables) if variables else "keine"))
+        if self.state.minimize_fasteners:
+            lines.append("- Ziel: minimale Stabdübelanzahl")
+        elif self.state.maximize_utilization:
             lines.append(
-                "- Gesperrte Benutzervorgaben: "
-                + ", ".join(sorted(self.state.fixed_parameters))
+                f"- Ziel: höchste zulässige Ausnutzung bis "
+                f"{self.state.max_utilization:.0%}"
             )
+
+        lines.append("\nNoch fehlend:")
+        missing = self._missing_required_parameters()
+        lines.extend(f"- {item}" for item in missing) if missing else lines.append("- nichts")
         return "\n".join(lines)
 
     def _answer_general_question(self, user_text: str) -> str:
+        if re.search(r"k\s*mod", user_text, re.IGNORECASE):
+            result = self.state.last_result
+            if result is None:
+                return (
+                    "kmod wird deterministisch aus Holzprodukt, Nutzungsklasse und "
+                    f"Lasteinwirkungsdauer nach {KMOD_SOURCE} bestimmt. Für den aktuellen "
+                    "Dialog liegt noch kein vollständiges Rechenergebnis vor."
+                )
+            data = result.input
+            return (
+                f"Verwendet wird kmod = {data.k_mod:g}. Der Wert folgt automatisch "
+                f"aus Holzklasse {data.timber_grade}, Nutzungsklasse "
+                f"{data.service_class} und Lasteinwirkungsdauer "
+                f"„{data.load_duration_class}“ nach {KMOD_SOURCE}; das LLM setzt "
+                "diesen Wert nicht selbst."
+            )
         if re.search(r"n[_\s-]?eff", user_text, re.IGNORECASE):
             result = self.state.last_result
             suffix = ""
@@ -1065,6 +1345,79 @@ class StabduebelAssistant:
         )
 
     def _compare_requested_variants(self, user_text: str) -> str:
+        service_classes = [
+            int(value)
+            for value in re.findall(
+                r"\b(?:nutzungsklasse|nk|service\s*class)\s*([123])\b",
+                user_text,
+                re.IGNORECASE,
+            )
+        ]
+        if len(service_classes) >= 2 and self.state.last_result is not None:
+            base = self.state.last_result.input
+            material = self.materials.get(base.timber_grade)
+            lines: list[str] = []
+            for service_class in service_classes[:2]:
+                values = asdict(base)
+                values["service_class"] = service_class
+                values["k_mod"] = get_kmod(
+                    material, service_class, base.load_duration_class
+                )
+                result = calculate_stabduebel(StabduebelInput(**values))
+                validation = validate_oenorm(result.input, result)
+                lines.append(
+                    f"- NK{service_class}: kmod = {result.input.k_mod:g}, "
+                    f"Ausnutzung {result.governing_check.utilization:.0%}, "
+                    f"maßgebend „{result.governing_check.name}“, "
+                    f"{'zulässig' if validation.admissible else 'nicht zulässig'}"
+                )
+            return (
+                "Vergleich der tatsächlich mit dem Python-Rechenkern berechneten "
+                f"Nutzungsklassen bei Lasteinwirkungsdauer „{base.load_duration_class}“:\n"
+                + "\n".join(lines)
+            )
+        arrangement_variants = [
+            (int(n), int(m), float(d.replace(",", ".")))
+            for n, m, d in re.findall(
+                r"\b(\d+)\s*[x×✕]\s*(\d+)\s*(?:(?:stab)?dübel?)?.*?"
+                r"(?:ø|⌀)\s*(\d+(?:[.,]\d+)?)",
+                user_text,
+                re.IGNORECASE,
+            )
+        ]
+        if len(arrangement_variants) >= 2 and self.state.last_result is not None:
+            base = self.state.last_result.input
+            compared: list[StabduebelResult] = []
+            for n, m, diameter in arrangement_variants:
+                values = asdict(base)
+                values.update(
+                    rows_parallel_n=n,
+                    rows_perpendicular_m=m,
+                    dowel_diameter_d_mm=diameter,
+                )
+                run = optimize_stabduebel(
+                    StabduebelInput(**values),
+                    fixed_parameters={
+                        "dowel_diameter_d_mm",
+                        "rows_parallel_n",
+                        "rows_perpendicular_m",
+                        *self.state.fixed_parameters,
+                    },
+                    max_utilization=1.0,
+                    minimize_fasteners=False,
+                )
+                candidate = run.selected or next(
+                    (
+                        item for item in run.evaluated
+                        if item.validation.admissible
+                    ),
+                    None,
+                )
+                if candidate is not None:
+                    compared.append(candidate.result)
+            if len(compared) >= 2:
+                self._comparison_results = compared
+                return self._compare_variants()
         diameters = [
             float(value.replace(",", "."))
             for value in re.findall(r"(?:ø|⌀)\s*(\d+(?:[.,]\d+)?)|\b(\d+(?:[.,]\d+)?)er\b", user_text, re.IGNORECASE)
@@ -1073,7 +1426,7 @@ class StabduebelAssistant:
         if len(diameters) >= 2 and self.state.last_result is not None:
             compared: list[StabduebelResult] = []
             base = self.state.last_result.input
-            for diameter in diameters[:2]:
+            for diameter in diameters:
                 values = asdict(base)
                 values["dowel_diameter_d_mm"] = diameter
                 candidate = StabduebelInput(**values)
@@ -1084,16 +1437,22 @@ class StabduebelAssistant:
                     max_utilization=1.0,
                     minimize_fasteners=False,
                 )
-                if run.selected is not None:
-                    compared.append(run.selected.result)
-            if len(compared) == 2:
+                candidate_result = (
+                    run.selected.result
+                    if run.selected is not None
+                    else run.evaluated[0].result
+                    if run.evaluated else None
+                )
+                if candidate_result is not None:
+                    compared.append(candidate_result)
+            if len(compared) >= 2:
                 self._comparison_results = compared
         return self._compare_variants()
 
     def _compare_variants(self) -> str:
         if len(self._comparison_results) >= 2:
             lines = []
-            for result in self._comparison_results[-2:]:
+            for result in self._comparison_results:
                 data = result.input
                 count = data.rows_parallel_n * data.rows_perpendicular_m
                 validation = validate_oenorm(data, result)
@@ -1191,6 +1550,9 @@ class StabduebelAssistant:
             f"{opening}\n\n"
             f"Anschlussfall: {data.connection_case}\n"
             f"Scherfugen: {data.shear_planes_s}\n"
+            f"Nutzungsklasse: {data.service_class}\n"
+            f"Lasteinwirkungsdauer: {data.load_duration_class}\n"
+            f"kmod: {data.k_mod:g} (automatisch nach {KMOD_SOURCE})\n"
             f"{result_label}: {data.timber_grade}, Ø{data.dowel_diameter_d_mm:g} mm, "
             f"{data.rows_parallel_n} × {data.rows_perpendicular_m} = "
             f"{fastener_count} Stabdübel.\n"
@@ -1218,6 +1580,8 @@ class StabduebelAssistant:
 
         add("Ft,d", "force_ed_kn", " kN")
         add("Holzklasse", "timber_grade")
+        add("Nutzungsklasse", "service_class")
+        add("Lasteinwirkungsdauer", "load_duration_class")
 
         if "width_b_mm" in parameters and "height_h_mm" in parameters:
             lines.append(
@@ -1252,6 +1616,9 @@ class StabduebelAssistant:
         lines.append(f"Optimierungsziel: {objective}")
 
         if input_data is not None:
+            lines.append(
+                f"kmod: {input_data.k_mod:g}  ·  automatisch nach {KMOD_SOURCE}"
+            )
             arrangement_source = (
                 "Benutzervorgabe"
                 if {
@@ -1297,7 +1664,10 @@ class StabduebelAssistant:
             f"in einer Anordnung {data.rows_parallel_n} × {data.rows_perpendicular_m}, "
             f"{data.number_of_plates_ns} Stahlbleche mit {data.plate_thickness_ts_mm:g} mm "
             f"Dicke, Holzklasse {data.timber_grade} und einem Holzquerschnitt von "
-            f"{data.width_b_mm:g} × {data.height_h_mm:g} mm. Der Rechenkern bewertet den "
+            f"{data.width_b_mm:g} × {data.height_h_mm:g} mm. "
+            f"kmod = {data.k_mod:g} wurde für Nutzungsklasse {data.service_class} und "
+            f"Lasteinwirkungsdauer „{data.load_duration_class}“ automatisch nach "
+            f"{KMOD_SOURCE} bestimmt. "
             f"Gesamtnachweis als {status}. Die maximale Ausnutzung beträgt "
             f"{utilization:.0%}; maßgebend ist „{result.governing_check.name}“. "
         )
