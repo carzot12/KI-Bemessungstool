@@ -41,14 +41,13 @@ def test_reference_geometry_is_admissible_with_documented_open_checks() -> None:
             {"rows_parallel_n": 1, "rows_perpendicular_m": 1},
             "Mindestanzahl Stabdübel",
         ),
-        ({"shear_planes_s": 2}, "Mindestanzahl Scherflächen"),
         (
-            {"number_of_plates_ns": 1, "shear_planes_s": 4},
-            "Scherflächen und innenliegende Stahlbleche",
+            {"number_of_plates_ns": 1, "side_thickness_t1_mm": 97.0},
+            "Mindestanzahl Scherflächen",
         ),
         (
             {"number_of_plates_ns": 3, "shear_planes_s": 6},
-            "Anwendungsgrenze des V1-Rechenmodells",
+            "Rechnerisch unterstützter Anschlussfall",
         ),
         (
             {"dowel_steel_grade": "S355", "dowel_fu_k_n_mm2": 360.0},
@@ -135,3 +134,19 @@ def test_one_plate_is_not_silently_replaced_and_is_not_selected() -> None:
     assert optimization.selected is None
     assert optimization.evaluated
     assert all(item.input.number_of_plates_ns == 1 for item in optimization.evaluated)
+
+
+def test_shear_planes_are_derived_from_plate_count() -> None:
+    one_plate = replace(
+        StabduebelInput(),
+        number_of_plates_ns=1,
+        shear_planes_s=99,
+    )
+    two_plates = replace(
+        StabduebelInput(),
+        number_of_plates_ns=2,
+        shear_planes_s=2,
+    )
+
+    assert one_plate.shear_planes_s == 2
+    assert two_plates.shear_planes_s == 4

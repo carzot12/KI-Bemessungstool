@@ -545,6 +545,9 @@ class StabduebelApp(ctk.CTk):
             text=(
                 f"Maximale Ausnutzung: {utilization:.0%}\n"
                 f"Maßgebend: {result.governing_check.name}\n"
+                f"Anschlussfall: {data.connection_case}\n"
+                f"Scherfugen: {data.shear_planes_s}\n"
+                f"Rechenmodell: {data.connection_model}\n"
                 f"Stabdübel: {data.rows_parallel_n} × "
                 f"{data.rows_perpendicular_m} = {count} · "
                 f"Ø{data.dowel_diameter_d_mm:g} mm\n"
@@ -555,6 +558,11 @@ class StabduebelApp(ctk.CTk):
                     "\nValidierung: "
                     + "; ".join(check.name for check in validation.failures)
                     if validation.failures else ""
+                )
+                + (
+                    "\nÖsterreichische Gesamtzulässigkeit: NEIN "
+                    "(nur 2 Scherfugen)"
+                    if data.number_of_plates_ns == 1 else ""
                 )
             )
         )
@@ -628,6 +636,9 @@ class StabduebelApp(ctk.CTk):
             text=(
                 f"Maximale Ausnutzung: {utilization:.0%}\n"
                 f"Maßgebend: {result.governing_check.name}\n"
+                f"Anschlussfall: {data.connection_case}\n"
+                f"Scherfugen: {data.shear_planes_s}\n"
+                f"Rechenmodell: {data.connection_model}\n"
                 f"Holzklasse: {data.timber_grade}\n"
                 f"Querschnitt: {data.width_b_mm:g} × {data.height_h_mm:g} mm\n"
                 f"Stabdübel: {data.rows_parallel_n} × "
@@ -640,6 +651,11 @@ class StabduebelApp(ctk.CTk):
                     + "; ".join(check.name for check in validation.failures)
                     if validation.failures else ""
                 )
+                + (
+                    "\nÖsterreichische Gesamtzulässigkeit: NEIN "
+                    "(nur 2 Scherfugen)"
+                    if data.number_of_plates_ns == 1 else ""
+                )
             ),
             text_color=self.TEXT,
         )
@@ -650,6 +666,9 @@ class StabduebelApp(ctk.CTk):
     def _detailed_result(result: StabduebelResult) -> str:
         validation = validate_oenorm(result.input, result)
         lines = [
+            f"Anschlussfall: {result.input.connection_case}",
+            f"Scherfugen: {result.input.shear_planes_s}",
+            f"Rechenmodell: {result.input.connection_model}",
             f"Holzklasse: {result.input.timber_grade}",
             f"Last: {result.input.force_ed_kn:.2f} kN",
             f"Anordnung: {result.input.rows_parallel_n} × "

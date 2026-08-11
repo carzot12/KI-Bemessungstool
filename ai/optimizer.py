@@ -23,6 +23,7 @@ from calculations.oenorm_validation import (
 ROWS_PARALLEL = (1, 2, 3, 4)
 ROWS_PERPENDICULAR = (2, 3, 4, 5, 6)
 SUPPORTED_DOWEL_DIAMETERS_MM = (8.0, 10.0, 12.0, 16.0, 20.0, 24.0)
+SUPPORTED_PLATE_COUNTS = (1, 2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,63 +83,78 @@ def optimize_stabduebel(
         if "rows_perpendicular_m" in fixed
         else ROWS_PERPENDICULAR
     )
+    plate_counts = (
+        (base_input.number_of_plates_ns,)
+        if "number_of_plates_ns" in fixed
+        else SUPPORTED_PLATE_COUNTS
+    )
 
     evaluated: list[EvaluatedVariant] = []
-    for diameter in diameters:
-        for rows_parallel in parallel_values:
-            for rows_perpendicular in perpendicular_values:
-                if (
-                    required_fastener_count is not None
-                    and rows_parallel * rows_perpendicular != required_fastener_count
-                ):
-                    continue
-                candidate = replace(
-                    base_input,
-                    dowel_diameter_d_mm=diameter,
-                    hole_diameter_d0_mm=(
-                        base_input.hole_diameter_d0_mm
-                        if "hole_diameter_d0_mm" in fixed
-                        else base_input.hole_diameter_d0_mm
-                        if diameter == 12.0
-                        else diameter
-                    ),
-                    a1_mm=(
-                        base_input.a1_mm
-                        if "a1_mm" in fixed
-                        else base_input.a1_mm
-                        if diameter == 12.0
-                        else 5.0 * diameter
-                    ),
-                    a2_mm=(
-                        base_input.a2_mm
-                        if "a2_mm" in fixed
-                        else base_input.a2_mm
-                        if diameter == 12.0
-                        else 3.0 * diameter
-                    ),
-                    a3_t_mm=(
-                        base_input.a3_t_mm
-                        if "a3_t_mm" in fixed
-                        else base_input.a3_t_mm
-                        if diameter == 12.0
-                        else max(7.0 * diameter, 80.0)
-                    ),
-                    a4_c_mm=(
-                        base_input.a4_c_mm
-                        if "a4_c_mm" in fixed
-                        else base_input.a4_c_mm
-                        if diameter == 12.0
-                        else 3.0 * diameter
-                    ),
-                    rows_parallel_n=rows_parallel,
-                    rows_perpendicular_m=rows_perpendicular,
-                )
-                try:
-                    result = calculate_stabduebel(candidate)
-                except (ValueError, ZeroDivisionError):
-                    continue
-                validation = validate_oenorm(candidate, result)
-                evaluated.append(EvaluatedVariant(candidate, result, validation))
+    for plate_count in plate_counts:
+        for diameter in diameters:
+            for rows_parallel in parallel_values:
+                for rows_perpendicular in perpendicular_values:
+                    if (
+                        required_fastener_count is not None
+                        and rows_parallel * rows_perpendicular != required_fastener_count
+                    ):
+                        continue
+                    candidate = replace(
+                        base_input,
+                        number_of_plates_ns=plate_count,
+                        side_thickness_t1_mm=(
+                            base_input.side_thickness_t1_mm
+                            if "side_thickness_t1_mm" in fixed or plate_count == 2
+                            else (
+                                base_input.width_b_mm
+                                - base_input.plate_thickness_ts_mm
+                            ) / 2.0
+                        ),
+                        dowel_diameter_d_mm=diameter,
+                        hole_diameter_d0_mm=(
+                            base_input.hole_diameter_d0_mm
+                            if "hole_diameter_d0_mm" in fixed
+                            else base_input.hole_diameter_d0_mm
+                            if diameter == 12.0
+                            else diameter
+                        ),
+                        a1_mm=(
+                            base_input.a1_mm
+                            if "a1_mm" in fixed
+                            else base_input.a1_mm
+                            if diameter == 12.0
+                            else 5.0 * diameter
+                        ),
+                        a2_mm=(
+                            base_input.a2_mm
+                            if "a2_mm" in fixed
+                            else base_input.a2_mm
+                            if diameter == 12.0
+                            else 3.0 * diameter
+                        ),
+                        a3_t_mm=(
+                            base_input.a3_t_mm
+                            if "a3_t_mm" in fixed
+                            else base_input.a3_t_mm
+                            if diameter == 12.0
+                            else max(7.0 * diameter, 80.0)
+                        ),
+                        a4_c_mm=(
+                            base_input.a4_c_mm
+                            if "a4_c_mm" in fixed
+                            else base_input.a4_c_mm
+                            if diameter == 12.0
+                            else 3.0 * diameter
+                        ),
+                        rows_parallel_n=rows_parallel,
+                        rows_perpendicular_m=rows_perpendicular,
+                    )
+                    try:
+                        result = calculate_stabduebel(candidate)
+                    except (ValueError, ZeroDivisionError):
+                        continue
+                    validation = validate_oenorm(candidate, result)
+                    evaluated.append(EvaluatedVariant(candidate, result, validation))
 
     feasible = [
         variant

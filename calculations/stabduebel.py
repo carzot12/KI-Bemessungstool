@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 """
-Parametrisierbarer Rechenkern für einen 4-schnittigen Stabdübel-Zugstoß
-mit zwei innenliegenden Schlitzblechen.
+Parametrisierbarer Rechenkern für Stabdübel-Zugstöße mit einem
+zweischnittigen Ein-Blech-Rechenfall und dem bestehenden vierschnittigen
+Zwei-Blech-Fall.
 
 Die Eingabewerte werden über ``StabduebelInput`` übergeben. Dadurch kann
 das Modul direkt aus einer GUI (z. B. app.py / CustomTkinter) aufgerufen
@@ -107,6 +108,25 @@ class StabduebelInput:
     # Einhängeeffekt; im Referenzbeispiel 0
     fax_rk_n: float = 0.0
 
+    def __post_init__(self) -> None:
+        # Innenliegende Bleche erzeugen je zwei Scherfugen. Die Schnittigkeit
+        # ist deshalb keine unabhängige Benutzervorgabe.
+        self.shear_planes_s = 2 * self.number_of_plates_ns
+
+    @property
+    def connection_case(self) -> str:
+        if self.number_of_plates_ns == 1:
+            return "Zuglaschenstoß – zweischnittig, 1 innenliegendes Stahlblech"
+        if self.number_of_plates_ns == 2:
+            return "Zuglaschenstoß – mehrschnittig, 2 innenliegende Stahlbleche"
+        return f"Nicht unterstützter Aufbau mit {self.number_of_plates_ns} Stahlblechen"
+
+    @property
+    def connection_model(self) -> str:
+        if self.number_of_plates_ns == 1:
+            return "ÖNORM EN 1995-1-1, Gleichung (8.11)"
+        return "Mehrschnittiges Zwei-Blech-Modell"
+
 
 # ============================================================
 # Ergebnis-Dataclasses
@@ -157,6 +177,7 @@ class StabduebelResult:
             "STABDÜBELNACHWEIS",
             "=" * 72,
             f"Projekt: {self.input.project_name}",
+            f"Anschlussfall: {self.input.connection_case}",
             f"Einwirkung Ft,d: {self.input.force_ed_kn:.2f} kN",
             "",
             "Zusammenstellung:",
@@ -174,7 +195,18 @@ class StabduebelResult:
             "",
             f"Maßgebend: {self.governing_check.name}",
             f"Ausnutzung: {self.governing_check.utilization:.2f}",
-            "GESAMTNACHWEIS: " + ("ERFÜLLT" if self.passed else "NICHT ERFÜLLT"),
+            (
+                "RECHNERISCHE TEILNACHWEISE: "
+                if self.input.number_of_plates_ns == 1
+                else "GESAMTNACHWEIS: "
+            ) + ("ERFÜLLT" if self.passed else "NICHT ERFÜLLT"),
+            *(
+                [
+                    "ÖSTERREICHISCHE GESAMTZULÄSSIGKEIT: NEIN "
+                    "(nur 2 Scherflächen)"
+                ]
+                if self.input.number_of_plates_ns == 1 else []
+            ),
             "=" * 72,
         ])
         return "\n".join(lines)
@@ -212,8 +244,14 @@ def validate_input(data: StabduebelInput) -> None:
     if data.number_of_plates_ns < 1:
         raise ValueError("Die Anzahl der Stahlbleche muss mindestens 1 sein.")
 
+    if data.number_of_plates_ns not in (1, 2):
+        raise ValueError("Unterstützt werden ausschließlich 1 oder 2 Stahlbleche.")
+
     if data.shear_planes_s <= 0:
         raise ValueError("Die Schnittigkeit s muss größer als 0 sein.")
+
+    if data.shear_planes_s != 2 * data.number_of_plates_ns:
+        raise ValueError("Die Scherflächenzahl muss 2 · Anzahl Stahlbleche entsprechen.")
 
     if data.hole_diameter_d0_mm < data.dowel_diameter_d_mm:
         raise ValueError("Der Lochdurchmesser d0 darf nicht kleiner als d sein.")
@@ -614,6 +652,52 @@ def calculate_timber_fastener(
     my = material["my_rk_nmm"]
     fax = data.fax_rk_n
 
+    if data.number_of_plates_ns == 1:
+        th_1_mm = min(t1, t1 - p, l + p - t1 - ts)
+        if th_1_mm <= 0:
+            raise ValueError(
+                "Die wirksame Seitenholzdicke des zweischnittigen "
+                "Anschlusses ist nicht positiv."
+            )
+
+        # ÖNORM EN 1995-1-1:2019, Gleichung (8.11): Stahlblech jeder
+        # Dicke als Mittelteil einer zweischnittigen Verbindung.
+        mode_f_n = fh * th_1_mm * d
+        mode_g_n = (
+            fh
+            * th_1_mm
+            * d
+            * (
+                sqrt(2.0 + 4.0 * my / (fh * d * th_1_mm**2))
+                - 1.0
+            )
+            + fax / 4.0
+        )
+        mode_h_n = 2.3 * sqrt(my * fh * d) + fax / 4.0
+        fv_rk_per_shear_plane_n = min(mode_f_n, mode_g_n, mode_h_n)
+        fv_rk_one_dowel_n = 2.0 * fv_rk_per_shear_plane_n
+        n_eff = effective_number_of_fasteners(data.rows_parallel_n, data.a1_mm, d)
+        fv_rk_total_kn = (
+            n_eff
+            * data.rows_perpendicular_m
+            * fv_rk_one_dowel_n
+            * 1e-3
+        )
+        fv_rd_kn = data.k_mod * fv_rk_total_kn / data.gamma_m_timber
+        return {
+            "connection_model": "EN 1995-1-1 (8.11), zweischnittig",
+            "th_1_mm": th_1_mm,
+            "mode_f_n": mode_f_n,
+            "mode_g_n": mode_g_n,
+            "mode_h_n": mode_h_n,
+            "fv_rk_per_shear_plane_n": fv_rk_per_shear_plane_n,
+            "fv_rk_one_dowel_n": fv_rk_one_dowel_n,
+            "n_eff": n_eff,
+            "fv_rk_total_kn": fv_rk_total_kn,
+            "resistance_kn": fv_rd_kn,
+            "utilization": ratio(data.force_ed_kn, fv_rd_kn),
+        }
+
     th_1_mm = min(
         t1,
         t1 - p,
@@ -899,23 +983,33 @@ def calculate_stabduebel(data: StabduebelInput) -> StabduebelResult:
 
     material = calculate_material(data)
     side_timber = calculate_side_timber(data, material)
-    middle_timber = calculate_middle_timber(data, material)
+    is_two_plate = data.number_of_plates_ns == 2
+    middle_timber = (
+        calculate_middle_timber(data, material)
+        if is_two_plate
+        else {"applicable": False, "reason": "Kein Mittelholz im Holz-Stahl-Holz-Aufbau."}
+    )
     steel_tension = calculate_steel_tension(data)
     steel_fastener = calculate_steel_fastener(data)
     steel_block = calculate_steel_block(data)
     timber_fastener = calculate_timber_fastener(data, material)
-    timber_block = calculate_timber_block(data, material)
+    timber_block = (
+        calculate_timber_block(data, material)
+        if is_two_plate
+        else {
+            "applicable": False,
+            "reason": (
+                "Das bestehende vierschnittige Holz-Blockmodell ist auf den "
+                "zweischnittigen Aufbau nicht anwendbar."
+            ),
+        }
+    )
 
     checks = [
         make_check(
             "Seitenholz – Nettoquerschnitt",
             data.force_ed_kn,
             side_timber["resistance_kn"],
-        ),
-        make_check(
-            "Mittelholz – Nettoquerschnitt",
-            data.force_ed_kn,
-            middle_timber["resistance_kn"],
         ),
         make_check(
             "Stahlblech – Zug",
@@ -937,12 +1031,19 @@ def calculate_stabduebel(data: StabduebelInput) -> StabduebelResult:
             data.force_ed_kn,
             timber_fastener["resistance_kn"],
         ),
-        make_check(
+    ]
+
+    if is_two_plate:
+        checks.insert(1, make_check(
+            "Mittelholz – Nettoquerschnitt",
+            data.force_ed_kn,
+            middle_timber["resistance_kn"],
+        ))
+        checks.append(make_check(
             "Blockscheren im Holz",
             data.force_ed_kn,
             timber_block["resistance_kn"],
-        ),
-    ]
+        ))
 
     governing_check = max(checks, key=lambda item: item.utilization)
     passed = all(check.passed for check in checks)

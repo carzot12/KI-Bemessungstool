@@ -182,19 +182,18 @@ def validate_oenorm(
             ),
         ),
         ValidationCheck(
-            name="Anwendungsgrenze des V1-Rechenmodells",
+            name="Rechnerisch unterstützter Anschlussfall",
             status=(
                 ValidationStatus.PASSED
-                if data.number_of_plates_ns == 2 and data.shear_planes_s == 4
+                if data.number_of_plates_ns in (1, 2)
                 else ValidationStatus.FAILED
             ),
             source=(
-                "calculations/stabduebel.py: vierschnittiger Zugstoß mit "
-                "zwei innenliegenden Schlitzblechen"
+                "calculations/stabduebel.py: getrennte zwei- und "
+                "vierschnittige Rechenmodelle"
             ),
             message=(
-                "Der bestehende Rechenkern ist ausschließlich für 2 innenliegende "
-                "Stahlbleche und 4 Scherflächen formuliert."
+                f"Rechenmodell: {data.connection_case}."
             ),
         ),
     ])
@@ -241,22 +240,23 @@ def validate_oenorm(
         unit="mm",
     ))
 
-    required_width = (
-        2.0 * data.side_thickness_t1_mm
-        + data.middle_thickness_t2_mm
-        + data.number_of_plates_ns * data.plate_thickness_ts_mm
+    required_width = 2.0 * data.side_thickness_t1_mm + (
+        data.plate_thickness_ts_mm
+        if data.number_of_plates_ns == 1
+        else data.middle_thickness_t2_mm
+        + 2.0 * data.plate_thickness_ts_mm
     )
     checks.append(ValidationCheck(
         name="Schichtaufbau im Querschnitt (Breite)",
         status=(
             ValidationStatus.PASSED
-            if required_width <= data.width_b_mm
+            if abs(required_width - data.width_b_mm) <= 1e-6
             else ValidationStatus.FAILED
         ),
         source=GEOMETRY_SOURCE,
         message=(
-            f"Der modellierte Schichtaufbau benötigt {required_width:g} mm; "
-            f"vorhanden sind {data.width_b_mm:g} mm."
+            f"Der modellierte Schichtaufbau ergibt {required_width:g} mm; "
+            f"der Querschnitt besitzt {data.width_b_mm:g} mm."
         ),
         actual=data.width_b_mm,
         required=required_width,
@@ -293,9 +293,9 @@ def validate_oenorm(
             status=(
                 ValidationStatus.PASSED if result.passed else ValidationStatus.FAILED
             ),
-            source="calculations/stabduebel.py (sieben bestehende Nachweise)",
+            source="calculations/stabduebel.py (anschlussfallabhängige Nachweise)",
             message=(
-                "Alle sieben Nachweise sind erfüllt."
+                f"Alle {len(result.checks)} rechnerisch geführten Nachweise sind erfüllt."
                 if result.passed
                 else f"Nicht erfüllt; maßgebend: {result.governing_check.name}."
             ),

@@ -18,3 +18,8 @@ git add .
 git commit -m "Update"
 git push
 
+git add .
+git commit -m "Add multi-diameter dowel optimization"
+git push
+cd ~/Desktop/"Vortrag Klagenfurt"
+./build_macos.sh

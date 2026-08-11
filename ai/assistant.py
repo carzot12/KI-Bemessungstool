@@ -210,7 +210,10 @@ class StabduebelAssistant:
         if optimization.selected is None:
             displayed = min(
                 optimization.evaluated,
-                key=lambda item: item.result.governing_check.utilization,
+                key=lambda item: (
+                    len(item.validation.failures),
+                    item.result.governing_check.utilization,
+                ),
                 default=None,
             )
             self.state.last_result = displayed.result if displayed else None
@@ -530,6 +533,13 @@ class StabduebelAssistant:
         )
         if one_plate:
             data["number_of_plates_ns"] = 1
+        if re.search(
+            r"holz\s*[-|]\s*stahl(?:blech)?\s*[-|]\s*holz|"
+            r"zweischnittig.*(?:ein(?:em|en)?|1)\s+stahlblech",
+            text,
+            re.IGNORECASE,
+        ):
+            data["number_of_plates_ns"] = 1
 
         normalized = text.lower()
         minimize = re.search(
@@ -819,6 +829,8 @@ class StabduebelAssistant:
         )
         return (
             f"{opening}\n\n"
+            f"Anschlussfall: {data.connection_case}\n"
+            f"Scherfugen: {data.shear_planes_s}\n"
             f"{result_label}: {data.timber_grade}, Ø{data.dowel_diameter_d_mm:g} mm, "
             f"{data.rows_parallel_n} × {data.rows_perpendicular_m} = "
             f"{fastener_count} Stabdübel.\n"
@@ -826,6 +838,13 @@ class StabduebelAssistant:
             f"η = {result.governing_check.utilization:.2f}.\n"
             f"Technisches Gesamtergebnis: {status}. {optimization.message}"
             f"{reasons}{closing}"
+            + (
+                "\nRechnerisch nach ÖNORM EN 1995-1-1, Gleichung (8.11), "
+                "untersucht, aber nach der österreichischen nationalen Ergänzung "
+                "für diesen tragenden Stabdübelanschluss nicht zulässig, da nur "
+                "2 Scherflächen vorhanden sind."
+                if data.number_of_plates_ns == 1 else ""
+            )
         )
 
     def _recognized_parameters(self, result: StabduebelResult | None = None) -> str:
@@ -912,7 +931,9 @@ class StabduebelAssistant:
             else "nicht zulässig"
         )
         text = (
-            f"Gewählt wurden {count} Stabdübel Ø{data.dowel_diameter_d_mm:g} mm "
+            f"Untersucht wurde der Anschlussfall „{data.connection_case}“ mit "
+            f"{data.shear_planes_s} Scherfugen. Gewählt wurden {count} Stabdübel "
+            f"Ø{data.dowel_diameter_d_mm:g} mm "
             f"in einer Anordnung {data.rows_parallel_n} × {data.rows_perpendicular_m}, "
             f"{data.number_of_plates_ns} Stahlbleche mit {data.plate_thickness_ts_mm:g} mm "
             f"Dicke, Holzklasse {data.timber_grade} und einem Holzquerschnitt von "
@@ -924,6 +945,12 @@ class StabduebelAssistant:
             text += "Die technische Validierung meldet: " + "; ".join(
                 check.message for check in validation.failures
             ) + " "
+            if data.number_of_plates_ns == 1:
+                text += (
+                    "Der Verbindungsmittelnachweis wurde rechnerisch nach Gleichung "
+                    "(8.11) geführt; eine österreichische Gesamtzulässigkeit wird "
+                    "ausdrücklich nicht behauptet. "
+                )
         elif result.passed:
             text += f"Bis 100 % verbleiben rechnerisch rund {reserve:.0%} Reserve. "
             if utilization > self.state.max_utilization:

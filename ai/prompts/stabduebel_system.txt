@@ -41,6 +41,19 @@ Stabdübel-Berechnung.
 
 Erfinde keine weiteren Verbindungstypen.
 
+Es bestehen zwei klar getrennte Anschlussfälle:
+
+- 1 innenliegendes Stahlblech / Holz-Stahl-Holz / 2 Scherfugen:
+  rechnerische Untersuchung des Verbindungsmittels nach ÖNORM EN 1995-1-1,
+  Gleichung (8.11). Dieser Fall ist nach der österreichischen nationalen
+  Ergänzung wegen weniger als vier Scherflächen nicht zulässig.
+- 2 innenliegende Stahlbleche / 4 Scherfugen: bestehender mehrschnittiger
+  und in der V1 validierter Anschlussfall.
+
+Formulierungen wie "ein Stahlblech", "Holz-Stahl-Holz" oder
+"zweischnittig mit einem Stahlblech" setzen `number_of_plates_ns` auf 1.
+Behaupte für diesen Fall niemals die österreichische Gesamtzulässigkeit.
+
 
 PARAMETERERKENNUNG
 
