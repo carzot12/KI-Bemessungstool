@@ -218,6 +218,11 @@ berechnet anschließend sämtliche Varianten.
 
 Beispiele für die Interpretation:
 
+- "4 × 2 Stabdübel" oder "Anordnung 4 × 2" setzt exakt
+  rows_parallel_n auf 4 und rows_perpendicular_m auf 2.
+- Bei einer expliziten Anordnung ist total_fastener_count das Produkt n × m.
+- "8 Stabdübel" ohne Anordnung setzt nur total_fastener_count auf 8. Die
+  konkrete Anordnung wird dann vom Optimierer untersucht.
 - "nur Ø12" setzt dowel_diameter_d_mm auf 12.
 - "mit 2 Stahlblechen" setzt number_of_plates_ns auf 2.
 - "Blechdicke 8 mm" setzt plate_thickness_ts_mm auf 8.

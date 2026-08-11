@@ -29,6 +29,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "plate_thickness_ts_mm": {"type": ["number", "null"]},
         "rows_parallel_n": {"type": ["integer", "null"]},
         "rows_perpendicular_m": {"type": ["integer", "null"]},
+        "total_fastener_count": {"type": ["integer", "null"]},
         "max_utilization": {"type": ["number", "null"]},
         "minimize_fasteners": {"type": "boolean"},
         "explain_governing": {"type": "boolean"},
@@ -41,6 +42,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "plate_thickness_ts_mm",
         "rows_parallel_n",
         "rows_perpendicular_m",
+        "total_fastener_count",
         "max_utilization",
         "minimize_fasteners",
         "explain_governing",
@@ -55,6 +57,7 @@ class ConversationState:
     fixed_parameters: set[str] = field(default_factory=set)
     max_utilization: float = 1.0
     minimize_fasteners: bool = False
+    requested_fastener_count: int | None = None
     last_result: StabduebelResult | None = None
     last_optimization: OptimizationResult | None = None
 
@@ -116,6 +119,7 @@ class StabduebelAssistant:
             fixed_parameters=self.state.fixed_parameters,
             max_utilization=self.state.max_utilization,
             minimize_fasteners=self.state.minimize_fasteners,
+            required_fastener_count=self.state.requested_fastener_count,
         )
         self.state.last_optimization = optimization
         if optimization.selected is None:
@@ -130,7 +134,11 @@ class StabduebelAssistant:
                 optimization,
             )
             return AssistantReply(
-                optimization.message,
+                (
+                    self._format_result(displayed.result, optimization)
+                    if displayed
+                    else optimization.message
+                ),
                 self.state.last_result,
                 used_llm,
                 self._recognized_parameters(self.state.last_result),
@@ -145,7 +153,7 @@ class StabduebelAssistant:
         self.state.parameters["rows_perpendicular_m"] = selected.input.rows_perpendicular_m
         self.state.parameters["dowel_diameter_d_mm"] = selected.input.dowel_diameter_d_mm
         return AssistantReply(
-            self._format_result(selected.result, selected.fastener_count, optimization),
+            self._format_result(selected.result, optimization),
             selected.result,
             used_llm,
             self._recognized_parameters(selected.result),
@@ -181,7 +189,8 @@ class StabduebelAssistant:
                         }
                     },
                 )
-                return self._validate_extraction(json.loads(response.output_text)), True
+                extracted = self._validate_extraction(json.loads(response.output_text))
+                return self._enforce_explicit_fastener_input(text, extracted), True
             except ImportError as exc:
                 raise RuntimeError(
                     "OPENAI_API_KEY ist gesetzt, aber das Paket 'openai' fehlt."
@@ -208,6 +217,7 @@ class StabduebelAssistant:
             "plate_thickness_ts_mm": None,
             "rows_parallel_n": None,
             "rows_perpendicular_m": None,
+            "total_fastener_count": None,
             "max_utilization": None,
             "minimize_fasteners": bool(re.search(r"weniger|möglichst wenig", normalized)),
             "explain_governing": bool(
@@ -255,17 +265,56 @@ class StabduebelAssistant:
         if utilization:
             data["max_utilization"] = float(utilization.group(1)) / 100.0
 
+        return self._enforce_explicit_fastener_input(text, data)
+
+    @staticmethod
+    def _enforce_explicit_fastener_input(
+        text: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Übernimmt explizites n × m wortgetreu, unabhängig vom LLM."""
+        arrangement = re.search(r"\b(\d+)\s*[x×✕]\s*(\d+)\b", text, re.IGNORECASE)
+        if arrangement:
+            rows_parallel = int(arrangement.group(1))
+            rows_perpendicular = int(arrangement.group(2))
+            data["rows_parallel_n"] = rows_parallel
+            data["rows_perpendicular_m"] = rows_perpendicular
+            data["total_fastener_count"] = rows_parallel * rows_perpendicular
+            return data
+
+        total = re.search(r"\b(\d+)\s*(?:stab)?dübel(?:n)?\b", text, re.IGNORECASE)
+        if total:
+            data["total_fastener_count"] = int(total.group(1))
+            data["rows_parallel_n"] = None
+            data["rows_perpendicular_m"] = None
         return data
 
     def _apply(self, extracted: dict[str, Any]) -> None:
+        rows_parallel = extracted.get("rows_parallel_n")
+        rows_perpendicular = extracted.get("rows_perpendicular_m")
+        total_fasteners = extracted.get("total_fastener_count")
+
+        if rows_parallel is not None and rows_perpendicular is not None:
+            self.state.parameters["rows_parallel_n"] = int(rows_parallel)
+            self.state.parameters["rows_perpendicular_m"] = int(rows_perpendicular)
+            self.state.fixed_parameters.update(
+                {"rows_parallel_n", "rows_perpendicular_m"}
+            )
+            self.state.requested_fastener_count = int(rows_parallel) * int(
+                rows_perpendicular
+            )
+        elif total_fasteners is not None:
+            self.state.requested_fastener_count = int(total_fasteners)
+            for key in ("rows_parallel_n", "rows_perpendicular_m"):
+                self.state.parameters.pop(key, None)
+                self.state.fixed_parameters.discard(key)
+
         for key in (
             "force_ed_kn",
             "timber_grade",
             "dowel_diameter_d_mm",
             "number_of_plates_ns",
             "plate_thickness_ts_mm",
-            "rows_parallel_n",
-            "rows_perpendicular_m",
         ):
             value = extracted.get(key)
             if value is not None:
@@ -312,10 +361,10 @@ class StabduebelAssistant:
     def _format_result(
         self,
         result: StabduebelResult,
-        fastener_count: int,
         optimization: OptimizationResult,
     ) -> str:
         data = result.input
+        fastener_count = data.rows_parallel_n * data.rows_perpendicular_m
         status = "erfüllt" if result.passed else "nicht erfüllt"
         return (
             f"Berechnete Variante: {data.timber_grade}, Ø{data.dowel_diameter_d_mm:g} mm, "
@@ -367,9 +416,19 @@ class StabduebelAssistant:
         lines.append(f"Optimierungsziel: {objective}")
 
         if input_data is not None:
+            arrangement_source = (
+                "Benutzervorgabe"
+                if {
+                    "rows_parallel_n",
+                    "rows_perpendicular_m",
+                }.issubset(self.state.fixed_parameters)
+                else "Optimierer"
+            )
             lines.append(
                 f"Gewählte Anordnung: {input_data.rows_parallel_n} × "
-                f"{input_data.rows_perpendicular_m}  ·  Optimierer"
+                f"{input_data.rows_perpendicular_m} = "
+                f"{input_data.rows_parallel_n * input_data.rows_perpendicular_m} "
+                f"Stabdübel  ·  {arrangement_source}"
             )
         return "\n".join(lines)
 

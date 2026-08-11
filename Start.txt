@@ -9,3 +9,12 @@ GitHub.com
 HTTPS
 Login with a web browser
 
+cd ~/Desktop/"Vortrag Klagenfurt"
+code .
+python app.py
+
+git status
+git add .
+git commit -m "Update"
+git push
+

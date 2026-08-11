@@ -494,8 +494,9 @@ class StabduebelApp(ctk.CTk):
             text=(
                 f"Maximale Ausnutzung: {utilization:.0%}\n"
                 f"Maßgebend: {result.governing_check.name}\n"
-                f"Stabdübel: {count} · {data.rows_parallel_n} × "
-                f"{data.rows_perpendicular_m} · Ø{data.dowel_diameter_d_mm:g} mm\n"
+                f"Stabdübel: {data.rows_parallel_n} × "
+                f"{data.rows_perpendicular_m} = {count} · "
+                f"Ø{data.dowel_diameter_d_mm:g} mm\n"
                 f"Stahlbleche: {data.number_of_plates_ns} · "
                 f"Dicke {data.plate_thickness_ts_mm:g} mm\n"
                 f"Holzklasse: {data.timber_grade}"
@@ -555,7 +556,9 @@ class StabduebelApp(ctk.CTk):
             f"Holzklasse: {result.input.timber_grade}",
             f"Last: {result.input.force_ed_kn:.2f} kN",
             f"Anordnung: {result.input.rows_parallel_n} × "
-            f"{result.input.rows_perpendicular_m} Stabdübel",
+            f"{result.input.rows_perpendicular_m} = "
+            f"{result.input.rows_parallel_n * result.input.rows_perpendicular_m} "
+            "Stabdübel",
             f"Stahlbleche: {result.input.number_of_plates_ns} × "
             f"{result.input.plate_thickness_ts_mm:g} mm",
             "",

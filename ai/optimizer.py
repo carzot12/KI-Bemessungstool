@@ -43,6 +43,7 @@ def optimize_stabduebel(
     fixed_parameters: set[str] | None = None,
     max_utilization: float = 1.0,
     minimize_fasteners: bool = True,
+    required_fastener_count: int | None = None,
 ) -> OptimizationResult:
     """Prüft den V1-Suchraum ausschließlich mit ``calculate_stabduebel``."""
     fixed = fixed_parameters or set()
@@ -75,6 +76,11 @@ def optimize_stabduebel(
     for diameter in diameters:
         for rows_parallel in parallel_values:
             for rows_perpendicular in perpendicular_values:
+                if (
+                    required_fastener_count is not None
+                    and rows_parallel * rows_perpendicular != required_fastener_count
+                ):
+                    continue
                 candidate = replace(
                     base_input,
                     dowel_diameter_d_mm=diameter,
