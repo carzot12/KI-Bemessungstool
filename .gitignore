@@ -20,6 +20,9 @@ dist/
 # Zugangsdaten / KI API Keys
 .env
 *.env
+.env.*
+!.env.example
 
 # VS Code
 .vscode/
+.pytest_cache/

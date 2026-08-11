@@ -1,0 +1,91 @@
+name: Desktop-Apps bauen
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-14
+            artifact: KI-Bemessungstool-macOS
+          - name: Windows
+            os: windows-latest
+            artifact: KI-Bemessungstool-Windows
+
+    runs-on: ${{ matrix.os }}
+    env:
+      OPENAI_API_KEY: ""
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-build.txt
+
+      - name: Abhängigkeiten installieren
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt -r requirements-build.txt
+
+      - name: Tests ausführen
+        run: python -m pytest
+
+      - name: macOS-App bauen
+        if: runner.os == 'macOS'
+        run: python -m PyInstaller --noconfirm --clean KI-Bemessungstool.spec
+
+      - name: macOS-Ressourcen prüfen
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          test -d "dist/KI-Bemessungstool.app"
+          find "dist/KI-Bemessungstool.app" -name logo.png -print -quit | grep -q .
+          find "dist/KI-Bemessungstool.app" -name timber.json -print -quit | grep -q .
+          find "dist/KI-Bemessungstool.app" -name stabduebel_system.txt -print -quit | grep -q .
+
+      - name: macOS-App als ZIP verpacken
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/KI-Bemessungstool.app" "KI-Bemessungstool-macOS.zip"
+
+      - name: Windows-App bauen
+        if: runner.os == 'Windows'
+        run: python -m PyInstaller --noconfirm --clean KI-Bemessungstool.spec
+
+      - name: Windows-Build und Ressourcen prüfen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/KI-Bemessungstool.exe")) { throw "EXE fehlt" }
+          $archive = python -m PyInstaller.utils.cliutils.archive_viewer --list --brief "dist/KI-Bemessungstool.exe" | Out-String
+          foreach ($resource in @("logo.png", "timber.json", "stabduebel_system.txt")) {
+            if (-not $archive.Contains($resource)) { throw "Eingebettete Ressource fehlt: $resource" }
+          }
+
+      - name: Windows-App als ZIP verpacken
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/KI-Bemessungstool.exe" -DestinationPath "KI-Bemessungstool-Windows.zip"
+
+      - name: Build-Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          if-no-files-found: error
+          retention-days: 30

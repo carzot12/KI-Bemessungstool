@@ -1,9 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 
 project_root = Path(SPECPATH)
+is_macos = sys.platform == "darwin"
+is_windows = sys.platform == "win32"
+
+if not (is_macos or is_windows):
+    raise RuntimeError("Diese Spec unterstützt derzeit macOS und Windows.")
 
 datas = [
     (str(project_root / "assets" / "logo.png"), "assets"),
@@ -35,8 +41,10 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    [] if is_macos else a.binaries,
+    [] if is_macos else a.datas,
     [],
-    exclude_binaries=True,
+    exclude_binaries=is_macos,
     name="KI-Bemessungstool",
     debug=False,
     bootloader_ignore_signals=False,
@@ -45,30 +53,36 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch="arm64",
+    target_arch=None,
+    icon=(
+        str(project_root / "assets" / "app_icon.icns")
+        if is_macos
+        else str(project_root / "assets" / "app_icon.ico")
+    ),
     codesign_identity=None,
     entitlements_file=None,
 )
 
-collect = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="KI-Bemessungstool",
-)
+if is_macos:
+    collect = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name="KI-Bemessungstool",
+    )
 
-app = BUNDLE(
-    collect,
-    name="KI-Bemessungstool.app",
-    icon=str(project_root / "assets" / "app_icon.icns"),
-    bundle_identifier="at.holzbauforschung.ki-bemessungstool",
-    version="1.0.0",
-    info_plist={
-        "CFBundleDisplayName": "KI-Bemessungstool",
-        "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "12.0",
-    },
-)
+    app = BUNDLE(
+        collect,
+        name="KI-Bemessungstool.app",
+        icon=str(project_root / "assets" / "app_icon.icns"),
+        bundle_identifier="at.holzbauforschung.ki-bemessungstool",
+        version="1.0.0",
+        info_plist={
+            "CFBundleDisplayName": "KI-Bemessungstool",
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "12.0",
+        },
+    )
