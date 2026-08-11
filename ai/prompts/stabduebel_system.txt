@@ -218,6 +218,10 @@ berechnet anschließend sämtliche Varianten.
 
 Beispiele für die Interpretation:
 
+- "Querschnitt 200 × 240 mm" setzt width_b_mm auf 200 und height_h_mm auf 240.
+- "Holzquerschnitt 20 × 24 cm" setzt width_b_mm auf 200 und height_h_mm auf 240.
+- Bei Querschnittsangaben ist der erste Wert b und der zweite Wert h; intern
+  werden ausschließlich Millimeter ausgegeben.
 - "4 × 2 Stabdübel" oder "Anordnung 4 × 2" setzt exakt
   rows_parallel_n auf 4 und rows_perpendicular_m auf 2.
 - Bei einer expliziten Anordnung ist total_fastener_count das Produkt n × m.
@@ -225,7 +229,10 @@ Beispiele für die Interpretation:
   konkrete Anordnung wird dann vom Optimierer untersucht.
 - "nur Ø12" setzt dowel_diameter_d_mm auf 12.
 - "mit 2 Stahlblechen" setzt number_of_plates_ns auf 2.
+- "mit einem Stahlblech", "mit 1 Stahlblech" und "Anzahl Stahlblech 1"
+  setzen number_of_plates_ns exakt auf 1.
 - "Blechdicke 8 mm" setzt plate_thickness_ts_mm auf 8.
 - "maximal 80 % Ausnutzung" setzt max_utilization auf 0.8.
 - "weniger Stabdübel" setzt minimize_fasteners auf true.
+- "wie viele Stabdübel brauche ich mindestens?" setzt minimize_fasteners auf true.
 - "Warum ist dieser Nachweis maßgebend?" setzt explain_governing auf true.

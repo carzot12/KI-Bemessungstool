@@ -27,6 +27,8 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "dowel_diameter_d_mm": {"type": ["number", "null"]},
         "number_of_plates_ns": {"type": ["integer", "null"]},
         "plate_thickness_ts_mm": {"type": ["number", "null"]},
+        "width_b_mm": {"type": ["number", "null"]},
+        "height_h_mm": {"type": ["number", "null"]},
         "rows_parallel_n": {"type": ["integer", "null"]},
         "rows_perpendicular_m": {"type": ["integer", "null"]},
         "total_fastener_count": {"type": ["integer", "null"]},
@@ -40,6 +42,8 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "dowel_diameter_d_mm",
         "number_of_plates_ns",
         "plate_thickness_ts_mm",
+        "width_b_mm",
+        "height_h_mm",
         "rows_parallel_n",
         "rows_perpendicular_m",
         "total_fastener_count",
@@ -190,7 +194,9 @@ class StabduebelAssistant:
                     },
                 )
                 extracted = self._validate_extraction(json.loads(response.output_text))
-                return self._enforce_explicit_fastener_input(text, extracted), True
+                extracted = self._enforce_cross_section_input(text, extracted)
+                extracted = self._enforce_explicit_fastener_input(text, extracted)
+                return self._enforce_plate_and_optimization_input(text, extracted), True
             except ImportError as exc:
                 raise RuntimeError(
                     "OPENAI_API_KEY ist gesetzt, aber das Paket 'openai' fehlt."
@@ -215,6 +221,8 @@ class StabduebelAssistant:
             "dowel_diameter_d_mm": None,
             "number_of_plates_ns": None,
             "plate_thickness_ts_mm": None,
+            "width_b_mm": None,
+            "height_h_mm": None,
             "rows_parallel_n": None,
             "rows_perpendicular_m": None,
             "total_fastener_count": None,
@@ -265,7 +273,48 @@ class StabduebelAssistant:
         if utilization:
             data["max_utilization"] = float(utilization.group(1)) / 100.0
 
-        return self._enforce_explicit_fastener_input(text, data)
+        data = self._enforce_cross_section_input(text, data)
+        data = self._enforce_explicit_fastener_input(text, data)
+        return self._enforce_plate_and_optimization_input(text, data)
+
+    @staticmethod
+    def _enforce_cross_section_input(
+        text: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Liest b × h beziehungsweise b/h und normalisiert cm auf mm."""
+        number = r"(\d+(?:[.,]\d+)?)"
+        paired = re.search(
+            rf"{number}\s*(?:x|×|✕|/)\s*{number}\s*(mm|cm)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if paired:
+            factor = 10.0 if paired.group(3).lower() == "cm" else 1.0
+            data["width_b_mm"] = float(paired.group(1).replace(",", ".")) * factor
+            data["height_h_mm"] = float(paired.group(2).replace(",", ".")) * factor
+            return data
+
+        width = re.search(
+            rf"\bb\s*=\s*{number}\s*(mm|cm)\b",
+            text,
+            re.IGNORECASE,
+        )
+        height = re.search(
+            rf"\bh\s*=\s*{number}\s*(mm|cm)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if width and height:
+            width_factor = 10.0 if width.group(2).lower() == "cm" else 1.0
+            height_factor = 10.0 if height.group(2).lower() == "cm" else 1.0
+            data["width_b_mm"] = (
+                float(width.group(1).replace(",", ".")) * width_factor
+            )
+            data["height_h_mm"] = (
+                float(height.group(1).replace(",", ".")) * height_factor
+            )
+        return data
 
     @staticmethod
     def _enforce_explicit_fastener_input(
@@ -273,6 +322,15 @@ class StabduebelAssistant:
         data: dict[str, Any],
     ) -> dict[str, Any]:
         """Übernimmt explizites n × m wortgetreu, unabhängig vom LLM."""
+        # Zahlenpaare mit mm/cm sind Querschnitte und keine Dübelanordnung.
+        if re.search(
+            r"\b\d+(?:[.,]\d+)?\s*(?:x|×|✕|/)\s*"
+            r"\d+(?:[.,]\d+)?\s*(?:mm|cm)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return data
+
         arrangement = re.search(r"\b(\d+)\s*[x×✕]\s*(\d+)\b", text, re.IGNORECASE)
         if arrangement:
             rows_parallel = int(arrangement.group(1))
@@ -287,6 +345,37 @@ class StabduebelAssistant:
             data["total_fastener_count"] = int(total.group(1))
             data["rows_parallel_n"] = None
             data["rows_perpendicular_m"] = None
+        return data
+
+    @staticmethod
+    def _enforce_plate_and_optimization_input(
+        text: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Übernimmt explizite Ein-Blech-Vorgaben und Minimalziel wortgetreu."""
+        one_plate = re.search(
+            r"\b(?:1|ein(?:e|em|en|er|es)?)\s+stahlblech(?:e|en)?\b",
+            text,
+            re.IGNORECASE,
+        ) or re.search(
+            r"\b(?:anzahl\s+)?stahlblech(?:e|en)?\s*[:=]?\s*"
+            r"(?:1|ein(?:e|em|en|er|es)?)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if one_plate:
+            data["number_of_plates_ns"] = 1
+
+        normalized = text.lower()
+        minimize = re.search(r"weniger|möglichst\s+wenig", normalized) or re.search(
+            r"wie\s+viele\s+(?:stab)?dübel.*(?:brauch|benötig|mindestens|minimal)",
+            normalized,
+        ) or re.search(
+            r"(?:mindestens|minimal).*?(?:stab)?dübel",
+            normalized,
+        )
+        if minimize:
+            data["minimize_fasteners"] = True
         return data
 
     def _apply(self, extracted: dict[str, Any]) -> None:
@@ -315,6 +404,8 @@ class StabduebelAssistant:
             "dowel_diameter_d_mm",
             "number_of_plates_ns",
             "plate_thickness_ts_mm",
+            "width_b_mm",
+            "height_h_mm",
         ):
             value = extracted.get(key)
             if value is not None:
@@ -389,6 +480,12 @@ class StabduebelAssistant:
         add("Ft,d", "force_ed_kn", " kN")
         add("Holzklasse", "timber_grade")
 
+        if "width_b_mm" in parameters and "height_h_mm" in parameters:
+            lines.append(
+                f"Querschnitt: {float(parameters['width_b_mm']):g} × "
+                f"{float(parameters['height_h_mm']):g} mm  ·  Benutzervorgabe"
+            )
+
         input_data = result.input if result else None
         for label, key, suffix in (
             ("Anzahl Stahlbleche", "number_of_plates_ns", ""),
@@ -453,7 +550,8 @@ class StabduebelAssistant:
             f"Gewählt wurden {count} Stabdübel Ø{data.dowel_diameter_d_mm:g} mm "
             f"in einer Anordnung {data.rows_parallel_n} × {data.rows_perpendicular_m}, "
             f"{data.number_of_plates_ns} Stahlbleche mit {data.plate_thickness_ts_mm:g} mm "
-            f"Dicke und Holzklasse {data.timber_grade}. Der Rechenkern bewertet den "
+            f"Dicke, Holzklasse {data.timber_grade} und einem Holzquerschnitt von "
+            f"{data.width_b_mm:g} × {data.height_h_mm:g} mm. Der Rechenkern bewertet den "
             f"Gesamtnachweis als {status}. Die maximale Ausnutzung beträgt "
             f"{utilization:.0%}; maßgebend ist „{result.governing_check.name}“. "
         )

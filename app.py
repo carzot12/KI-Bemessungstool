@@ -397,13 +397,62 @@ class StabduebelApp(ctk.CTk):
         result = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
         result.grid(row=0, column=1, sticky="nsew", padx=(10, 8), pady=10)
         result.grid_columnconfigure(0, weight=1)
-        result.grid_rowconfigure(1, weight=1)
+        result.grid_rowconfigure(3, weight=1)
         ctk.CTkLabel(
             result,
             text="Ergebnisse des Rechenkerns",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color=self.TEXT,
         ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 8))
+
+        self.manual_status_frame = ctk.CTkFrame(
+            result,
+            fg_color="#EEF1F4",
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        self.manual_status_frame.grid(
+            row=1, column=0, sticky="ew", padx=20, pady=(4, 12)
+        )
+        self.manual_status_frame.grid_columnconfigure(0, weight=1)
+        self.manual_status_title = ctk.CTkLabel(
+            self.manual_status_frame,
+            text="NOCH KEIN NACHWEIS",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=self.MUTED,
+        )
+        self.manual_status_title.grid(
+            row=0, column=0, sticky="w", padx=18, pady=(16, 5)
+        )
+        self.manual_status_details = ctk.CTkLabel(
+            self.manual_status_frame,
+            text="Nach der Berechnung erscheint hier die Zusammenfassung.",
+            justify="left",
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+            text_color=self.MUTED,
+        )
+        self.manual_status_details.grid(
+            row=1, column=0, sticky="ew", padx=18
+        )
+        self.manual_utilization_bar = ctk.CTkProgressBar(
+            self.manual_status_frame,
+            height=13,
+            progress_color=self.MUTED,
+            fg_color="#D8DDE3",
+        )
+        self.manual_utilization_bar.grid(
+            row=2, column=0, sticky="ew", padx=18, pady=(11, 17)
+        )
+        self.manual_utilization_bar.set(0)
+
+        ctk.CTkLabel(
+            result,
+            text="Detaillierte Einzelnachweise",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.TEXT,
+        ).grid(row=2, column=0, sticky="w", padx=20, pady=(0, 5))
         self.manual_result = ctk.CTkTextbox(
             result,
             font=ctk.CTkFont(family="Courier", size=12),
@@ -411,7 +460,7 @@ class StabduebelApp(ctk.CTk):
             border_width=1,
             border_color=self.BORDER,
         )
-        self.manual_result.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.manual_result.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20))
         self.manual_result.configure(state="disabled")
 
     def _manual_material_row(self, form: ctk.CTkScrollableFrame) -> None:
@@ -544,11 +593,45 @@ class StabduebelApp(ctk.CTk):
                 fv_k_n_mm2=material.value("fv_k"),
             )
             result = calculate_stabduebel(StabduebelInput(**values))
+            self._update_manual_status_block(result)
             self._set_text(self.manual_result, self._detailed_result(result))
         except (ValueError, KeyError) as exc:
             messagebox.showerror("Ungültige Eingabe", str(exc))
         except Exception as exc:
             messagebox.showerror("Berechnungsfehler", str(exc))
+
+    def _update_manual_status_block(self, result: StabduebelResult) -> None:
+        passed = result.passed
+        color = self.GREEN if passed else self.RED
+        background = "#E8F5EE" if passed else "#FBEAEC"
+        data = result.input
+        count = data.rows_parallel_n * data.rows_perpendicular_m
+        utilization = result.governing_check.utilization
+
+        self.manual_status_frame.configure(
+            fg_color=background,
+            border_color=color,
+        )
+        self.manual_status_title.configure(
+            text="✓ NACHWEIS ERFÜLLT" if passed else "✕ NACHWEIS NICHT ERFÜLLT",
+            text_color=color,
+        )
+        self.manual_status_details.configure(
+            text=(
+                f"Maximale Ausnutzung: {utilization:.0%}\n"
+                f"Maßgebend: {result.governing_check.name}\n"
+                f"Holzklasse: {data.timber_grade}\n"
+                f"Querschnitt: {data.width_b_mm:g} × {data.height_h_mm:g} mm\n"
+                f"Stabdübel: {data.rows_parallel_n} × "
+                f"{data.rows_perpendicular_m} = {count} · "
+                f"Ø{data.dowel_diameter_d_mm:g} mm\n"
+                f"Stahlbleche: {data.number_of_plates_ns} · "
+                f"Dicke {data.plate_thickness_ts_mm:g} mm"
+            ),
+            text_color=self.TEXT,
+        )
+        self.manual_utilization_bar.configure(progress_color=color)
+        self.manual_utilization_bar.set(min(utilization, 1.0))
 
     @staticmethod
     def _detailed_result(result: StabduebelResult) -> str:
