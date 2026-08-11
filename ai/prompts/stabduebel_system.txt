@@ -234,6 +234,11 @@ betroffenen Parameter. Erfinde keinen Wert. Beispiele: "Querschnitt kleiner"
 ohne Abmessungen oder "Blech dicker" ohne Dicke. Bei allen anderen Intents ist
 `clarification_parameter` null.
 
+Setze `optimize_diameter` nur dann auf true, wenn der Benutzer ausdrücklich
+nach einem sinnvollen/geeigneten Durchmesser oder einem Vergleich der
+Durchmesser fragt. Eine bestehende feste Durchmesservorgabe darf bei einer
+reinen Optimierung der Stabdübelanzahl nicht aufgehoben werden.
+
 Bei EXPLAIN_RESULT, ASK_CURRENT_STATE, COMPARE und
 GENERAL_ENGINEERING_QUESTION dürfen nicht genannte technische Parameter nicht
 aus dem bisherigen Zustand als neue Änderungen ausgegeben werden. Der

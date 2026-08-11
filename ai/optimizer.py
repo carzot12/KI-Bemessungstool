@@ -15,11 +15,14 @@ from calculations.oenorm_validation import (
 )
 
 
-# Fachlich festgelegter, bewusst kleiner V1-Suchraum. Andere Eingabewerte
-# bleiben unverändert; jede Kombination wird vom bestehenden Rechenkern geprüft.
+# Fachlich festgelegter V1-Suchraum. Die ÖNORM erlaubt 6 mm < d < 30 mm
+# und warnt oberhalb 24 mm. Die automatische Suche untersucht deshalb alle
+# ausgewählte gerade Nenndurchmesser im nicht gewarnten Bereich. Das ist ein
+# Suchraster, keine normative Durchmesserreihe. Explizite Benutzervorgaben
+# innerhalb des gesamten Normbereichs werden unabhängig davon geprüft.
 ROWS_PARALLEL = (1, 2, 3, 4)
 ROWS_PERPENDICULAR = (2, 3, 4, 5, 6)
-SUPPORTED_DOWEL_DIAMETERS_MM = (12.0,)
+SUPPORTED_DOWEL_DIAMETERS_MM = (8.0, 10.0, 12.0, 16.0, 20.0, 24.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,13 +60,16 @@ def optimize_stabduebel(
         if "dowel_diameter_d_mm" in fixed
         else SUPPORTED_DOWEL_DIAMETERS_MM
     )
-    if any(diameter not in SUPPORTED_DOWEL_DIAMETERS_MM for diameter in diameters):
+    if any(not 6.0 < diameter < 30.0 for diameter in diameters):
         return OptimizationResult(
             selected=None,
             evaluated=(),
             evaluated_count=0,
             feasible_count=0,
-            message="Der V1-Suchraum unterstützt ausschließlich Stabdübel Ø12 mm.",
+            message=(
+                "Der Stabdübeldurchmesser ist nach dem aktuellen ÖNORM-Profil "
+                "nur im Bereich 6 mm < d < 30 mm zulässig."
+            ),
         )
 
     parallel_values = (
@@ -89,6 +95,41 @@ def optimize_stabduebel(
                 candidate = replace(
                     base_input,
                     dowel_diameter_d_mm=diameter,
+                    hole_diameter_d0_mm=(
+                        base_input.hole_diameter_d0_mm
+                        if "hole_diameter_d0_mm" in fixed
+                        else base_input.hole_diameter_d0_mm
+                        if diameter == 12.0
+                        else diameter
+                    ),
+                    a1_mm=(
+                        base_input.a1_mm
+                        if "a1_mm" in fixed
+                        else base_input.a1_mm
+                        if diameter == 12.0
+                        else 5.0 * diameter
+                    ),
+                    a2_mm=(
+                        base_input.a2_mm
+                        if "a2_mm" in fixed
+                        else base_input.a2_mm
+                        if diameter == 12.0
+                        else 3.0 * diameter
+                    ),
+                    a3_t_mm=(
+                        base_input.a3_t_mm
+                        if "a3_t_mm" in fixed
+                        else base_input.a3_t_mm
+                        if diameter == 12.0
+                        else max(7.0 * diameter, 80.0)
+                    ),
+                    a4_c_mm=(
+                        base_input.a4_c_mm
+                        if "a4_c_mm" in fixed
+                        else base_input.a4_c_mm
+                        if diameter == 12.0
+                        else 3.0 * diameter
+                    ),
                     rows_parallel_n=rows_parallel,
                     rows_perpendicular_m=rows_perpendicular,
                 )

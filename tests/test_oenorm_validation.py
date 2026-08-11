@@ -112,8 +112,12 @@ def test_too_small_net_section_is_rejected_by_calculation_input_validation() -> 
 
 
 def test_optimizer_never_selects_normatively_invalid_fixed_geometry() -> None:
-    data = replace(StabduebelInput(), a1_mm=40.0)
-    optimization = optimize_stabduebel(data, minimize_fasteners=True)
+    data = replace(StabduebelInput(), a1_mm=30.0)
+    optimization = optimize_stabduebel(
+        data,
+        fixed_parameters={"a1_mm"},
+        minimize_fasteners=True,
+    )
 
     assert optimization.selected is None
     assert optimization.evaluated

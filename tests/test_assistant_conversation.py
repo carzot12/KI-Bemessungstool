@@ -88,9 +88,8 @@ def test_colloquial_diameter_changes_are_understood() -> None:
     reply = respond(assistant, "nimm lieber 16er")
 
     assert assistant.state.parameters["dowel_diameter_d_mm"] == 16.0
-    # Der bestehende V1-Suchraum meldet die nicht unterstützte Vorgabe
-    # transparent; die Conversational-Schicht ersetzt sie nicht durch 12 mm.
-    assert reply.result is None
+    assert reply.result is not None
+    assert reply.result.input.dowel_diameter_d_mm == 16.0
 
 
 def test_cross_section_without_unit_is_clarified_not_parsed_as_arrangement() -> None:

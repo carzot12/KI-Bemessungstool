@@ -51,6 +51,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "total_fastener_count": {"type": ["integer", "null"]},
         "max_utilization": {"type": ["number", "null"]},
         "minimize_fasteners": {"type": "boolean"},
+        "optimize_diameter": {"type": "boolean"},
         "explain_governing": {"type": "boolean"},
     },
     "required": [
@@ -68,6 +69,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
         "total_fastener_count",
         "max_utilization",
         "minimize_fasteners",
+        "optimize_diameter",
         "explain_governing",
     ],
     "additionalProperties": False,
@@ -312,6 +314,13 @@ class StabduebelAssistant:
             "minimize_fasteners": bool(
                 re.search(r"weniger|möglichst\s+wenig|so\s+wenig", normalized)
             ),
+            "optimize_diameter": bool(
+                re.search(
+                    r"welcher\s+(?:stab)?dübel(?:durchmesser)?|"
+                    r"welcher\s+durchmesser.*(?:sinnvoll|geeignet)",
+                    normalized,
+                )
+            ),
             "explain_governing": bool(
                 re.search(r"warum|weshalb", normalized)
                 and re.search(r"maßgeb|nachweis", normalized)
@@ -340,6 +349,8 @@ class StabduebelAssistant:
             data["intent"] = "CLARIFICATION"
             data["clarification_parameter"] = "dowel_diameter_d_mm"
         elif re.search(r"so\s+wenig|möglichst\s+wenig|wie\s+viele.*mindestens", normalized):
+            data["intent"] = "OPTIMIZE"
+        elif data["optimize_diameter"]:
             data["intent"] = "OPTIMIZE"
         elif re.search(r"anschluss|bemess", normalized):
             data["intent"] = "NEW_DESIGN"
@@ -387,6 +398,12 @@ class StabduebelAssistant:
         diameter = re.search(r"(?:ø|⌀|durchmesser|dübel)\s*(\d+(?:\.\d+)?)", normalized)
         if not diameter:
             diameter = re.search(r"\b(\d+(?:\.\d+)?)er(?:\s+(?:stab)?dübel)?\b", normalized)
+        if not diameter and "dowel_diameter_d_mm" in self.state.fixed_parameters:
+            diameter = re.search(
+                r"(?:jetzt|nun|doch\s+wieder)\s+(?:mit|auf)\s*"
+                r"(\d+(?:\.\d+)?)\s*mm\b",
+                normalized,
+            )
         if diameter:
             data["dowel_diameter_d_mm"] = float(diameter.group(1))
 
@@ -570,6 +587,8 @@ class StabduebelAssistant:
             self.state.max_utilization = maximum
         if extracted.get("minimize_fasteners"):
             self.state.minimize_fasteners = True
+        if extracted.get("optimize_diameter"):
+            self.state.fixed_parameters.discard("dowel_diameter_d_mm")
 
     def _build_input(self) -> StabduebelInput:
         defaults = asdict(StabduebelInput())
