@@ -1,0 +1,3 @@
+cd dektop/KI-Prüfberichte
+python -m calculations.stabduebel
+python app.py

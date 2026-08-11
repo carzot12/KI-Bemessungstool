@@ -1,0 +1,21 @@
+# Normen / Unterlagen nicht auf GitHub
+Unterlagen/
+
+# Alte Dateien
+xxx/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Zugangsdaten / KI API Keys
+.env
+*.env
+
+# VS Code
+.vscode/
