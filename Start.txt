@@ -1,3 +1,11 @@
 cd dektop/KI-Prüfberichte
 python -m calculations.stabduebel
 python app.py
+
+cd ~/Desktop/"Vortrag Klagenfurt"
+pwd
+gh auth login
+GitHub.com
+HTTPS
+Login with a web browser
+
