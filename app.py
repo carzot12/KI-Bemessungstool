@@ -112,10 +112,11 @@ class StabduebelApp(ctk.CTk):
         ("force_ed_kn", "Bemessungslast Ft,d [kN]", "float"),
         ("width_b_mm", "Breite b [mm]", "float"),
         ("height_h_mm", "Höhe h [mm]", "float"),
+        ("number_of_plates_ns", "Anzahl Stahlbleche", "int"),
+        ("plate_thickness_ts_mm", "Blechdicke ts [mm]", "float"),
         ("side_thickness_t1_mm", "Seitenholz t1 [mm]", "float"),
         ("middle_thickness_t2_mm", "Mittelholz t2 [mm]", "float"),
-        ("number_of_plates_ns", "Anzahl Bleche", "int"),
-        ("plate_thickness_ts_mm", "Blechdicke ts [mm]", "float"),
+        ("slot_air_per_cut_ts_l_mm", "Schlitz-/Luftwert ts,L [mm]", "float"),
         ("dowel_diameter_d_mm", "Stabdübel d [mm]", "float"),
         ("dowel_length_l_mm", "Stabdübellänge l [mm]", "float"),
         ("hole_diameter_d0_mm", "Lochdurchmesser d0 [mm]", "float"),
@@ -249,18 +250,33 @@ class StabduebelApp(ctk.CTk):
             "GL24h und möglichst wenigen Stabdübeln.‘\n\n",
         )
         self.chat.configure(state="disabled")
+        self.chat.bind("<B1-Motion>", self._chat_selection_autoscroll, add="+")
+        self.chat.bind("<Command-c>", self._copy_chat_selection)
+        self.chat.bind("<Control-c>", self._copy_chat_selection)
+
+        self.new_message_button = ctk.CTkButton(
+            chat_card, text="↓ Neue Nachricht", width=145, height=28,
+            fg_color="#E9ECEF", hover_color="#DDE1E5", text_color=self.TEXT,
+            command=self._scroll_chat_to_end,
+        )
+        self.new_message_button.grid(row=2, column=0, sticky="e", padx=20, pady=(0, 6))
+        self.new_message_button.grid_remove()
 
         input_row = ctk.CTkFrame(chat_card, fg_color="transparent")
-        input_row.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 18))
+        input_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 18))
         input_row.grid_columnconfigure(0, weight=1)
-        self.assistant_entry = ctk.CTkEntry(
+        self.assistant_entry = ctk.CTkTextbox(
             input_row,
-            height=52,
-            placeholder_text="Anforderung oder Folgeprompt eingeben …",
+            height=72,
+            wrap="word",
+            font=ctk.CTkFont(size=14),
             border_color=self.BORDER,
+            border_width=1,
+            fg_color="#FFFFFF",
         )
         self.assistant_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.assistant_entry.bind("<Return>", lambda _event: self._send_to_assistant())
+        self.assistant_entry.bind("<Return>", self._on_chat_enter)
+        self.assistant_entry.bind("<Shift-Return>", self._on_chat_shift_enter)
         self.send_button = ctk.CTkButton(
             input_row,
             text="Senden",
@@ -430,7 +446,23 @@ class StabduebelApp(ctk.CTk):
 
         self._manual_material_row(form)
         self._manual_design_condition_rows(form)
-        for row, (key, label, kind) in enumerate(self.MANUAL_FIELDS, start=4):
+        row = 4
+        section_starts = {
+            "project_name": "ALLGEMEIN",
+            "width_b_mm": "HOLZQUERSCHNITT",
+            "number_of_plates_ns": "ANSCHLUSSAUFBAU",
+            "dowel_diameter_d_mm": "STABDÜBEL UND ABSTÄNDE",
+        }
+        for key, label, kind in self.MANUAL_FIELDS:
+            if key in section_starts:
+                ctk.CTkLabel(
+                    form,
+                    text=section_starts[key],
+                    text_color=self.RED,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    anchor="w",
+                ).grid(row=row, column=0, columnspan=2, sticky="w", padx=12, pady=(15, 4))
+                row += 1
             ctk.CTkLabel(form, text=label, text_color=self.TEXT, anchor="w").grid(
                 row=row, column=0, sticky="w", padx=12, pady=5
             )
@@ -438,8 +470,20 @@ class StabduebelApp(ctk.CTk):
             entry.grid(row=row, column=1, sticky="e", padx=12, pady=5)
             entry._value_kind = kind  # type: ignore[attr-defined]
             self.entries[key] = entry
+            row += 1
 
-        button_row = len(self.MANUAL_FIELDS) + 4
+        ctk.CTkLabel(
+            form,
+            text=(
+                "Die geladenen Startwerte bilden den bestehenden Referenzfall ab. "
+                "Sie sind keine allgemeingültigen Norm-Standardwerte."
+            ),
+            wraplength=360,
+            justify="left",
+            text_color=self.MUTED,
+            font=ctk.CTkFont(size=10),
+        ).grid(row=row, column=0, columnspan=2, sticky="w", padx=12, pady=(12, 4))
+        button_row = row + 1
         ctk.CTkButton(
             form,
             text="Nachweis berechnen",
@@ -597,10 +641,11 @@ class StabduebelApp(ctk.CTk):
         return value
 
     def _send_to_assistant(self) -> None:
-        text = self.assistant_entry.get().strip()
+        text = self.assistant_entry.get("1.0", "end-1c").strip()
         if not text:
             return
-        self.assistant_entry.delete(0, "end")
+        self.assistant_entry.delete("1.0", "end")
+        self.assistant_entry.focus_set()
         self._append_chat("Sie", text)
         self.send_button.configure(state="disabled", text="Berechnet …")
         self.ai_mode_label.configure(text="Anfrage wird verarbeitet …")
@@ -635,12 +680,14 @@ class StabduebelApp(ctk.CTk):
         else:
             self._clear_status_block()
         self.send_button.configure(state="normal", text="Senden")
+        self.assistant_entry.focus_set()
 
     def _show_assistant_error(self, error: str) -> None:
         self._append_chat("Fehler", error)
         self.ai_mode_label.configure(text="Fehler")
         self.header_ai_status.configure(text="KI · Fehler", text_color=self.RED)
         self.send_button.configure(state="normal", text="Senden")
+        self.assistant_entry.focus_set()
 
     def _reset_assistant(self) -> None:
         self.assistant.reset()
@@ -710,10 +757,41 @@ class StabduebelApp(ctk.CTk):
         self.ai_utilization_bar.set(0)
 
     def _append_chat(self, sender: str, text: str) -> None:
+        at_bottom = self.chat.yview()[1] >= 0.98
         self.chat.configure(state="normal")
         self.chat.insert("end", f"{sender}:\n{text}\n\n")
-        self.chat.see("end")
         self.chat.configure(state="disabled")
+        if at_bottom:
+            self._scroll_chat_to_end()
+        else:
+            self.new_message_button.grid()
+
+    def _on_chat_enter(self, event) -> str:
+        if event.state & 0x0001:
+            return self._on_chat_shift_enter(event)
+        self._send_to_assistant()
+        return "break"
+
+    def _on_chat_shift_enter(self, _event) -> str:
+        self.assistant_entry.insert("insert", "\n")
+        return "break"
+
+    def _scroll_chat_to_end(self) -> None:
+        self.chat.see("end")
+        self.new_message_button.grid_remove()
+
+    def _chat_selection_autoscroll(self, event) -> None:
+        margin = 18
+        height = self.chat.winfo_height()
+        if event.y < margin:
+            self.chat.yview_scroll(-1, "units")
+        elif event.y > height - margin:
+            self.chat.yview_scroll(1, "units")
+
+    @staticmethod
+    def _copy_chat_selection(event) -> str:
+        event.widget.event_generate("<<Copy>>")
+        return "break"
 
     def _load_manual_defaults(self) -> None:
         defaults = StabduebelInput()

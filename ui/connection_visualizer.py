@@ -20,6 +20,7 @@ class ConnectionVisualizerData:
     height_mm: float
     side_thickness_mm: float
     middle_thickness_mm: float
+    slot_allowance_mm: float
     rows_parallel_n: int
     rows_perpendicular_m: int
     diameter_mm: float
@@ -67,6 +68,7 @@ class ConnectionVisualizerData:
             height_mm=data.height_h_mm,
             side_thickness_mm=data.side_thickness_t1_mm,
             middle_thickness_mm=data.middle_thickness_t2_mm,
+            slot_allowance_mm=data.slot_air_per_cut_ts_l_mm,
             rows_parallel_n=data.rows_parallel_n,
             rows_perpendicular_m=data.rows_perpendicular_m,
             diameter_mm=data.dowel_diameter_d_mm,
@@ -228,12 +230,13 @@ class ConnectionVisualizer(ctk.CTkFrame):
         c.create_rectangle(x0, y0, x1, y1, fill=self.WOOD, outline=self.WOOD_LINE, width=2)
 
         scale_x = box_w / data.width_mm
-        plate_width = max(3.0, data.plate_thickness_mm * scale_x)
+        technical_plate_width = data.plate_thickness_mm * scale_x
+        plate_width = max(3.0, technical_plate_width)
         if data.plate_count == 1:
-            plate_centres = [x0 + data.side_thickness_mm * scale_x + plate_width / 2]
+            plate_centres = [x0 + data.side_thickness_mm * scale_x + technical_plate_width / 2]
         else:
-            first = x0 + data.side_thickness_mm * scale_x + plate_width / 2
-            second = first + data.plate_thickness_mm * scale_x + data.middle_thickness_mm * scale_x
+            first = x0 + data.side_thickness_mm * scale_x + technical_plate_width / 2
+            second = first + technical_plate_width + data.middle_thickness_mm * scale_x
             plate_centres = [first, second]
         for centre in plate_centres:
             c.create_rectangle(
@@ -251,6 +254,22 @@ class ConnectionVisualizer(ctk.CTkFrame):
             text=(f"b = {data.width_mm:g} mm   ·   h = {data.height_mm:g} mm   ·   "
                   f"t = {data.plate_thickness_mm:g} mm   ·   {data.shear_planes} Scherfugen"),
             fill=self.INK, font=("Arial", 10),
+        )
+        if data.plate_count == 2:
+            build_up = (
+                f"Aufbau: {data.side_thickness_mm:g} | {data.plate_thickness_mm:g} | "
+                f"{data.middle_thickness_mm:g} | {data.plate_thickness_mm:g} | "
+                f"{data.side_thickness_mm:g} mm"
+            )
+        else:
+            build_up = (
+                f"Aufbau: {data.side_thickness_mm:g} | {data.plate_thickness_mm:g} | "
+                f"{data.side_thickness_mm:g} mm"
+            )
+        c.create_text(
+            width / 2, y1 + 40,
+            text=build_up + f"   ·   ts,L = {data.slot_allowance_mm:g} mm",
+            fill=self.MUTED, font=("Arial", 9),
         )
 
     @staticmethod

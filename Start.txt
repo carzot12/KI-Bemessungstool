@@ -15,7 +15,7 @@ python app.py
 
 git status
 git add .
-git commit -m "Update"
+git commit -m "Update ts"
 git push
 
 git add .

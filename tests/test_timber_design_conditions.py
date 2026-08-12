@@ -71,7 +71,7 @@ def test_nk1_and_mittel_complete_pending_design_and_set_kmod() -> None:
     respond(
         assistant,
         "140 kN GL24h, Querschnitt 200x240 mm, 2 Stahlbleche, "
-        "6 mm Blechdicke, möglichst wenige Stabdübel",
+        "6 mm Blechdicke, t1 60, t2 68, ts,L 1, möglichst wenige Stabdübel",
     )
     reply = respond(assistant, "NK1 und mittel")
 
@@ -87,7 +87,7 @@ def test_service_class_and_duration_followups_recalculate_and_keep_state() -> No
     first = respond(
         assistant,
         "140 kN GL24h NK1 mittel, Querschnitt 200x240 mm, "
-        "2 Stahlbleche, 6 mm Blechdicke, möglichst wenige Stabdübel",
+        "2 Stahlbleche, 6 mm Blechdicke, t1 60, t2 68, ts,L 1, möglichst wenige Stabdübel",
     )
     second = respond(assistant, "ändere auf NK2")
     third = respond(assistant, "was wäre bei kurzer Lasteinwirkungsdauer?")
@@ -110,7 +110,7 @@ def test_kmod_question_is_answered_from_current_result_without_recalculation() -
     respond(
         assistant,
         "140 kN GL24h NK3 ständig, Querschnitt 200x240 mm, "
-        "2 Stahlbleche, 6 mm Blechdicke, möglichst wenige Stabdübel",
+        "2 Stahlbleche, 6 mm Blechdicke, t1 60, t2 68, ts,L 1, möglichst wenige Stabdübel",
     )
     previous = assistant.state.last_optimization
     reply = respond(assistant, "Warum ist kmod jetzt 0,5?")
@@ -127,7 +127,7 @@ def test_nk1_nk2_comparison_uses_calculated_results() -> None:
     respond(
         assistant,
         "140 kN GL24h NK1 mittel, Querschnitt 200x240 mm, "
-        "2 Stahlbleche, 6 mm Blechdicke, möglichst wenige Stabdübel",
+        "2 Stahlbleche, 6 mm Blechdicke, t1 60, t2 68, ts,L 1, möglichst wenige Stabdübel",
     )
     reply = respond(assistant, "Vergleiche NK1 und NK2")
 

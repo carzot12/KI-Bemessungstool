@@ -20,6 +20,7 @@ def respond(assistant: StabduebelAssistant, text: str):
 COMPLETE_OPTIMIZATION = (
     "140 kN, GL24h, Querschnitt 200x240 mm, 2 innenliegende Bleche, "
     "6 mm Blechdicke, NK1, mittlere Lasteinwirkungsdauer, "
+    "t1 60 mm, t2 68 mm, ts,L 1 mm, "
     "möglichst wenige Stabdübel"
 )
 
@@ -82,6 +83,7 @@ def test_required_dialog_keeps_one_internal_plate_atomically() -> None:
     assert "Stabdübeldurchmesser" in fourth.text
 
     respond(assistant, "6 mm Blechdicke")
+    respond(assistant, "Seitenholz 97 mm, ts,L 1 mm")
     result = respond(assistant, "möglichst wenige Stabdübel")
     assert result.result is not None
     assert result.result.input.number_of_plates_ns == 1
@@ -108,7 +110,10 @@ def test_information_may_arrive_in_different_order_and_two_plates_persist() -> N
     respond(assistant, "NK2 und kurz")
     respond(assistant, "2 innenliegende Bleche, 8 mm Blechdicke")
     respond(assistant, "Querschnitt 200x240")
-    reply = respond(assistant, "GL24h, 140 kN, möglichst wenige Stabdübel")
+    reply = respond(
+        assistant,
+        "GL24h, 140 kN, t1 60 mm, t2 64 mm, ts,L 1 mm, möglichst wenige Stabdübel",
+    )
 
     assert reply.result is not None
     assert assistant.state.parameters["number_of_plates_ns"] == 2
@@ -182,8 +187,8 @@ def test_fixed_variant_maximum_load_and_multi_diameter_comparison() -> None:
     assistant = StabduebelAssistant()
     fixed = respond(
         assistant,
-        "140 kN, GL24h, Querschnitt 200x240 mm, 2 Stahlbleche, "
-        "6 mm Blechdicke, NK1, mittel, 2x4 Stabdübel, Ø12",
+            "140 kN, GL24h, Querschnitt 200x240 mm, 2 Stahlbleche, "
+            "6 mm Blechdicke, t1 60, t2 68, ts,L 1, NK1, mittel, 2x4 Stabdübel, Ø12",
     )
     assert fixed.result is not None
 
@@ -202,8 +207,8 @@ def test_two_explicit_arrangements_are_compared_exactly() -> None:
     assistant = StabduebelAssistant()
     respond(
         assistant,
-        "140 kN, GL24h, Querschnitt 200x240 mm, 2 Stahlbleche, "
-        "6 mm Blechdicke, NK1, mittel, möglichst wenige Stabdübel",
+            "140 kN, GL24h, Querschnitt 200x240 mm, 2 Stahlbleche, "
+            "6 mm Blechdicke, t1 60, t2 68, ts,L 1, NK1, mittel, möglichst wenige Stabdübel",
     )
     comparison = respond(assistant, "Vergleiche 2x4 Ø12 mit 2x3 Ø16.")
 

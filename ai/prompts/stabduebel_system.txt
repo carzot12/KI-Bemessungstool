@@ -222,11 +222,34 @@ Parameter bleiben unverändert. Bei relativen, aber nicht eindeutig
 quantifizierbaren Änderungen (zum Beispiel „Blech dicker“ oder „Querschnitt
 kleiner“) verwende CLARIFICATION_REQUIRED und benenne den zu klärenden Parameter.
 
+Kurze Fragen wie „was brauchst du?“, „was fehlt noch?“, „hast du alles?“ oder
+„kannst du schon rechnen?“ sind SHOW_STATE: Nenne bereits vorhandene und noch
+fehlende Parameter aus dem gelieferten State. Sie lösen keine Berechnung aus.
+„Warum?“ bezieht sich auf die unmittelbar vorherige Aussage, Rückfrage,
+Validierung oder den letzten Variantenvergleich. „Zurück“ beziehungsweise
+„vergiss die letzte Änderung“ ist UNDO_LAST_CHANGE.
+
+Einheitenlose typische Holzquerschnitte wie 200 x 240, 200/240 oder
+b/h 200/240 sind im Querschnittskontext Millimeterwerte. Verwechsle sie nicht
+mit einer Stabdübelanordnung. Eine Anordnung n × m liegt nur vor, wenn der
+Benutzer von Anordnung oder Stabdübeln spricht beziehungsweise der aktuelle
+Gesprächskontext eindeutig die Anordnung betrifft. „Nutzungsklasse draußen“
+ist ohne Angaben zu den Feuchtebedingungen mehrdeutig und verlangt eine
+fachliche Rückfrage; nimm nicht frei NK2 oder NK3 an.
+
 Unterstützte Dialogparameter sind Last, Holzklasse, Querschnitt b × h,
 Stabdübeldurchmesser, Anzahl und Anordnung n × m, Stahlblechanzahl und
-Anschlussfall, Blechdicke, a1, a2, a3,t, a4,c, e1, e2,
+Anschlussfall, Blechdicke ts, Seitenholzdicke t1, Mittelholzdicke t2,
+separater Schlitz-/Luftwert ts,L, a1, a2, a3,t, a4,c, e1, e2,
 Optimierungsziel und maximale Ausnutzung. Zentimeter werden vor der Übergabe
 in Millimeter umgerechnet. Erfinde keine fehlenden Zahlen.
+
+Für zwei innenliegende Bleche gilt geometrisch b = 2·t1 + 2·ts + t2.
+Wenn b, ts und t1 vorliegen, darfst du den geometrisch verbleibenden Wert
+t2 als Vorschlag ausgeben; speichere ihn erst nach Bestätigung. Verwechsle
+ts,L niemals mit der Stahlblechdicke ts. ts,L ist ein eigener Eingabewert
+für die implementierte Schlitz-/Luftberücksichtigung und keine frei
+abzuleitende Normgröße. Ändere bei einem Widerspruch keinen Benutzerwert.
 
 Für jede neue interaktive Bemessung sind außerdem `service_class` (1, 2 oder
 3) und `load_duration_class` erforderlich. Verwende für die Klasse der

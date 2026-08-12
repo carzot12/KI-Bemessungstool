@@ -14,6 +14,7 @@ def respond(assistant: StabduebelAssistant, text: str):
 COMPLETE = (
     "140 kN GL24h, Querschnitt 200x240 mm, zwei innenliegende Bleche, "
     "Blech 6 mm, NK1, mittel, möglichst wenige Stabdübel"
+    ", t1 60 mm, t2 68 mm, ts,L 1 mm"
 )
 
 
@@ -140,11 +141,11 @@ def test_twenty_turn_dialog_keeps_technical_and_conversation_state_consistent() 
         "querschnit 20x24",
         "ein blech 6mm",
         "nuzungsklasse 1 und mittel",
-        "möglichst wenige dübel",
+        "seitenholz 97, ts,L 1, möglichst wenige dübel",
         "warum is des nicht zulässig",
         "okay verstehe",
         "und wenn ich zwei bleche nehme?",
-        "mach ma 16er dübl draus",
+        "t1 60, t2 68, mach ma 16er dübl draus",
         "is des besser?",
         "warum?",
         "wieviel kn geht damit",
