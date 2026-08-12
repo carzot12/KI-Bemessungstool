@@ -546,7 +546,7 @@ class StabduebelApp(ctk.CTk):
     def _show_assistant_reply(self, reply: AssistantReply) -> None:
         self._append_chat("Assistent", reply.text)
         mode = "OpenAI LLM + deterministischer Rechenkern" if reply.used_llm else (
-            "Lokale Demo-Erkennung + deterministischer Rechenkern"
+            "KI-Sprachmodell nicht verfügbar – eingeschränkter lokaler Modus"
         )
         self.ai_mode_label.configure(text=mode)
         self.recognized_values.configure(

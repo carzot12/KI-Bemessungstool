@@ -100,17 +100,15 @@ def test_colloquial_diameter_changes_are_understood() -> None:
     assert reply.result.input.dowel_diameter_d_mm == 16.0
 
 
-def test_cross_section_without_unit_is_clarified_not_parsed_as_arrangement() -> None:
+def test_cross_section_without_unit_uses_clear_cross_section_context() -> None:
     assistant = StabduebelAssistant()
     respond(assistant, "140 kN, GL24h")
-    previous_result = assistant.state.last_result
-
     reply = respond(assistant, "mach den Querschnitt 20x24")
 
-    assert "Welche Abmessungen" in reply.text
-    assert assistant.state.last_result is previous_result
-    assert "rows_parallel_n" not in assistant.state.fixed_parameters
-    assert "rows_perpendicular_m" not in assistant.state.fixed_parameters
+    assert reply.result is not None
+    assert assistant.state.parameters["width_b_mm"] == 200.0
+    assert assistant.state.parameters["height_h_mm"] == 240.0
+    assert "Querschnitt 200 × 240 mm" in reply.text
 
 
 def test_recommendation_question_uses_existing_result_without_recalculation() -> None:

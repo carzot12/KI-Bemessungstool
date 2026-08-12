@@ -186,6 +186,14 @@ TARGET_UTILIZATION, EXPLAIN_RESULT, EXPLAIN_CHECK,
 RECOMMEND_IMPROVEMENT, ASK_CURRENT_STATE, UNDO_LAST_CHANGE,
 GENERAL_ENGINEERING_QUESTION oder CLARIFICATION_REQUIRED.
 
+Gib zusätzlich genau eine strukturierte action zurück:
+CHAT, ASK_MISSING_PARAMETERS, UPDATE_PARAMETERS, CALCULATE, OPTIMIZE,
+COMPARE, WHAT_IF, MAXIMUM_LOAD, TARGET_UTILIZATION, EXPLAIN_RESULT,
+EXPLAIN_NORM, SHOW_STATE, UNDO oder GENERAL_TECHNICAL_QUESTION.
+Eine technische Rechenaktion darf nur gewählt werden, wenn der Benutzer
+tatsächlich eine Berechnung, Änderung, Variante oder Optimierung verlangt.
+Bestätigungen, Kommentare und reine Diskussionen sind CHAT.
+
 Eine reine Erklärung, State-Abfrage oder Rückfrage löst keine Optimierung aus.
 WHAT_IF verändert nur ausdrücklich genannte Werte und verlangt eine echte
 Neuberechnung samt Vergleich zum vorherigen Ergebnis. MAXIMUM_LOAD bezeichnet

@@ -194,6 +194,7 @@ def test_deterministic_user_text_overrides_wrong_llm_diameter() -> None:
     }
     llm_output.update(
         intent="OPTIMIZE",
+        action="OPTIMIZE",
         clarification_parameter=None,
         dowel_diameter_d_mm=12.0,
         minimize_fasteners=False,

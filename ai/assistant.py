@@ -25,6 +25,7 @@ from infopol.materials import (
 )
 
 from .optimizer import (
+    EvaluatedVariant,
     SUPPORTED_DOWEL_DIAMETERS_MM,
     OptimizationResult,
     optimize_stabduebel,
@@ -48,6 +49,16 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                 "EXPLAIN_RESULT", "EXPLAIN_CHECK", "RECOMMEND_IMPROVEMENT",
                 "ASK_CURRENT_STATE", "UNDO_LAST_CHANGE",
                 "GENERAL_ENGINEERING_QUESTION", "CLARIFICATION_REQUIRED",
+            ],
+        },
+        "action": {
+            "type": "string",
+            "enum": [
+                "CHAT", "ASK_MISSING_PARAMETERS", "UPDATE_PARAMETERS",
+                "CALCULATE", "OPTIMIZE", "COMPARE", "WHAT_IF",
+                "MAXIMUM_LOAD", "TARGET_UTILIZATION", "EXPLAIN_RESULT",
+                "EXPLAIN_NORM", "SHOW_STATE", "UNDO",
+                "GENERAL_TECHNICAL_QUESTION",
             ],
         },
         "clarification_parameter": {
@@ -90,6 +101,7 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "intent",
+        "action",
         "clarification_parameter",
         "force_ed_kn",
         "timber_grade",
@@ -132,6 +144,20 @@ class ConversationState:
     requested_top_n: int | None = None
 
 
+@dataclass(slots=True)
+class DialogueMemory:
+    last_user_message: str = ""
+    last_intent: str | None = None
+    last_assistant_answer: str = ""
+    last_topic: str | None = None
+    previous_result: StabduebelResult | None = None
+    compared_results: list[StabduebelResult] = field(default_factory=list)
+    presented_variants: list[EvaluatedVariant] = field(default_factory=list)
+    open_question: str | None = None
+    missing_parameters: list[str] = field(default_factory=list)
+    last_action: str = "CHAT"
+
+
 @dataclass(frozen=True, slots=True)
 class AssistantReply:
     text: str
@@ -139,6 +165,7 @@ class AssistantReply:
     used_llm: bool
     recognized_parameters: str = ""
     interpretation: str = ""
+    debug: str = ""
 
 
 class StabduebelAssistant:
@@ -148,13 +175,26 @@ class StabduebelAssistant:
         self.system_prompt = PROMPT_PATH.read_text(encoding="utf-8")
         self._undo_state: ConversationState | None = None
         self._comparison_results: list[StabduebelResult] = []
+        self.conversation = DialogueMemory()
+        self.debug_enabled = os.getenv("STABDUEBEL_DEBUG", "").lower() in {
+            "1", "true", "yes",
+        }
 
     def reset(self) -> None:
         self.state = ConversationState()
         self._undo_state = None
         self._comparison_results = []
+        self.conversation = DialogueMemory()
 
     def respond(self, user_text: str) -> AssistantReply:
+        self.conversation.last_user_message = user_text
+        contextual = self._handle_contextual_chat(user_text)
+        if contextual is not None:
+            return self._record_reply(contextual)
+        reply = self._respond_technical(user_text)
+        return self._record_reply(reply)
+
+    def _respond_technical(self, user_text: str) -> AssistantReply:
         if not user_text.strip():
             raise ValueError("Bitte eine Anforderung eingeben.")
         if re.search(
@@ -178,6 +218,15 @@ class StabduebelAssistant:
         extracted, used_llm = self._extract(user_text)
 
         intent = str(extracted["intent"])
+        self.conversation.last_intent = intent
+        self.conversation.last_action = self._validated_action(extracted, intent)
+        if intent == "PARAMETER_CHANGE" and not self._has_extracted_change(extracted):
+            text = self._chat_acknowledgement(user_text)
+            self.conversation.last_action = "CHAT"
+            return AssistantReply(
+                text, self.state.last_result, used_llm,
+                self._recognized_parameters(self.state.last_result), text,
+            )
         if intent == "UNDO_LAST_CHANGE":
             return self._undo_reply(used_llm)
 
@@ -345,6 +394,7 @@ class StabduebelAssistant:
 
         selected = optimization.selected
         previous_result = state_before_change.last_result
+        self.conversation.previous_result = previous_result
         self.state.last_result = selected.result
         # Die gefundene Konfiguration wird zum aktuellen Entwurf, bleibt aber
         # veränderbar, sofern der Benutzer sie nicht ausdrücklich festgelegt hat.
@@ -354,6 +404,7 @@ class StabduebelAssistant:
         self._undo_state = state_before_change
         if intent == "WHAT_IF" and previous_result is not None:
             self._comparison_results = [previous_result, selected.result]
+            self.conversation.compared_results = list(self._comparison_results)
         ranking = self._ranked_variants_text(optimization)
         return AssistantReply(
             self._format_result(selected.result, optimization, intent, extracted)
@@ -363,6 +414,34 @@ class StabduebelAssistant:
             used_llm,
             self._recognized_parameters(selected.result),
             self._interpret_result(selected.result, optimization),
+        )
+
+    @staticmethod
+    def _has_extracted_change(extracted: dict[str, Any]) -> bool:
+        parameter_keys = {
+            "force_ed_kn", "timber_grade", "dowel_diameter_d_mm",
+            "number_of_plates_ns", "plate_thickness_ts_mm", "service_class",
+            "load_duration_class", "width_b_mm", "height_h_mm",
+            "rows_parallel_n", "rows_perpendicular_m", "total_fastener_count",
+            "a1_mm", "a2_mm", "a3_t_mm", "a4_c_mm", "e1_mm", "e2_mm",
+            "max_utilization", "min_utilization", "top_n",
+        }
+        return any(extracted.get(key) is not None for key in parameter_keys) or any(
+            extracted.get(key)
+            for key in ("minimize_fasteners", "maximize_utilization", "optimize_diameter")
+        )
+
+    def _chat_acknowledgement(self, user_text: str) -> str:
+        normalized = user_text.lower()
+        if re.search(r"zu viele.*dübel|dübel.*zu viel", normalized):
+            return (
+                "Verstanden – dein Ziel ist also eine geringere Stabdübelanzahl. "
+                "Ich kann dafür die bereits berechneten Alternativen vergleichen oder "
+                "Durchmesser und Anordnung gezielt neu optimieren."
+            )
+        return (
+            "Ich verstehe das als Gespräch zum aktuellen Entwurf, nicht als neuen "
+            "Rechenauftrag. Der technische State bleibt unverändert."
         )
 
     def _ranked_variants_text(self, optimization: OptimizationResult) -> str:
@@ -388,6 +467,7 @@ class StabduebelAssistant:
                     item.result.governing_check.utilization,
                 )
             )
+        self.conversation.presented_variants = feasible[: self.state.requested_top_n]
         lines = ["\n\nBeste tatsächlich berechnete Varianten:"]
         for index, item in enumerate(
             feasible[: self.state.requested_top_n], start=1
@@ -402,6 +482,241 @@ class StabduebelAssistant:
         if len(lines) == 1:
             lines.append("Keine Variante erfüllt die gesetzten Randbedingungen.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _action_for_intent(intent: str) -> str:
+        return {
+            "NEW_DESIGN": "ASK_MISSING_PARAMETERS",
+            "PARAMETER_CHANGE": "UPDATE_PARAMETERS",
+            "OPTIMIZE": "OPTIMIZE",
+            "WHAT_IF": "WHAT_IF",
+            "COMPARE": "COMPARE",
+            "MAXIMUM_LOAD": "MAXIMUM_LOAD",
+            "TARGET_UTILIZATION": "TARGET_UTILIZATION",
+            "EXPLAIN_RESULT": "EXPLAIN_RESULT",
+            "EXPLAIN_CHECK": "EXPLAIN_RESULT",
+            "RECOMMEND_IMPROVEMENT": "OPTIMIZE",
+            "ASK_CURRENT_STATE": "SHOW_STATE",
+            "UNDO_LAST_CHANGE": "UNDO",
+            "GENERAL_ENGINEERING_QUESTION": "GENERAL_TECHNICAL_QUESTION",
+            "CLARIFICATION_REQUIRED": "ASK_MISSING_PARAMETERS",
+        }.get(intent, "CHAT")
+
+    @classmethod
+    def _validated_action(cls, extracted: dict[str, Any], intent: str) -> str:
+        """Normalisiert die LLM-Aktion auf die deterministisch erlaubte Aktion."""
+        expected = cls._action_for_intent(intent)
+        proposed = str(extracted.get("action") or expected)
+        calculation_actions = {
+            "CALCULATE", "OPTIMIZE", "WHAT_IF", "MAXIMUM_LOAD",
+            "TARGET_UTILIZATION", "COMPARE",
+        }
+        if expected not in calculation_actions and proposed in calculation_actions:
+            return expected
+        return expected if proposed != expected else proposed
+
+    def _record_reply(self, reply: AssistantReply) -> AssistantReply:
+        previous = self.conversation.last_assistant_answer
+        self.conversation.open_question = self.state.pending_clarification
+        self.conversation.missing_parameters = self._missing_required_parameters()
+        if reply.result is not None and reply.result is not self.state.last_result:
+            self.conversation.previous_result = self.state.last_result
+        if self._comparison_results:
+            self.conversation.compared_results = list(self._comparison_results)
+        debug = ""
+        if self.debug_enabled:
+            debug = (
+                f"Intent: {self.conversation.last_intent}\n"
+                f"Action: {self.conversation.last_action}\n"
+                f"Technical State: {self.state.parameters}\n"
+                f"Missing: {self.conversation.missing_parameters}"
+            )
+        if previous and not self.conversation.last_topic:
+            self.conversation.last_topic = self.conversation.last_intent
+        answer_text = self._llm_formulate_answer(reply)
+        self.conversation.last_assistant_answer = answer_text
+        return AssistantReply(
+            text=answer_text,
+            result=reply.result,
+            used_llm=reply.used_llm,
+            recognized_parameters=reply.recognized_parameters,
+            interpretation=reply.interpretation,
+            debug=debug,
+        )
+
+    def _llm_formulate_answer(self, reply: AssistantReply) -> str:
+        """Formuliert vorhandene strukturierte Fakten, rechnet aber nichts."""
+        if (
+            not reply.used_llm
+            or not os.getenv("OPENAI_API_KEY")
+            or self.conversation.last_action
+            not in {
+                "CALCULATE", "UPDATE_PARAMETERS", "OPTIMIZE", "WHAT_IF",
+                "COMPARE", "MAXIMUM_LOAD", "TARGET_UTILIZATION",
+            }
+            or reply.result is None
+        ):
+            return reply.text
+        result = reply.result
+        data = result.input
+        validation = validate_oenorm(data, result)
+        payload = {
+            "action": self.conversation.last_action,
+            "status": "erfüllt" if result.passed else "nicht erfüllt",
+            "norm_status": "zulässig" if validation.admissible else "nicht zulässig",
+            "diameter_mm": data.dowel_diameter_d_mm,
+            "number_fasteners": data.rows_parallel_n * data.rows_perpendicular_m,
+            "rows_parallel_n": data.rows_parallel_n,
+            "rows_perpendicular_m": data.rows_perpendicular_m,
+            "utilization": result.governing_check.utilization,
+            "governing_check": result.governing_check.name,
+            "plates": data.number_of_plates_ns,
+            "shear_planes": data.shear_planes_s,
+            "warnings": [check.message for check in validation.failures],
+            "deterministic_fallback_text": reply.text,
+        }
+        try:
+            from openai import OpenAI
+
+            response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).responses.create(
+                model=MODEL,
+                instructions=(
+                    "Formuliere eine kurze, natürliche deutsche Antwort eines technischen "
+                    "Assistenten. Verwende ausschließlich die JSON-Fakten. Verändere keine "
+                    "Zahl, ergänze keine technische Zahl und erfinde keine Bewertung. "
+                    "Unterscheide rechnerischen Status und normative Zulässigkeit."
+                ),
+                input=json.dumps(payload, ensure_ascii=False),
+            )
+            candidate = response.output_text.strip()
+            allowed_numbers = set(
+                re.findall(r"\d+(?:[.,]\d+)?", json.dumps(payload, ensure_ascii=False))
+            )
+            candidate_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", candidate))
+            if candidate and candidate_numbers <= allowed_numbers:
+                return candidate
+        except Exception:
+            pass
+        return reply.text
+
+    def _handle_contextual_chat(self, user_text: str) -> AssistantReply | None:
+        normalized = user_text.lower().strip()
+        if re.fullmatch(r"(?:ok(?:ay)?|alles klar|verstehe|passt|danke)[.!]?", normalized):
+            self.conversation.last_intent = "CHAT"
+            self.conversation.last_action = "CHAT"
+            text = (
+                "Gerne. Wir können beim aktuellen Entwurf bleiben – sag einfach, "
+                "was du als Nächstes prüfen oder ändern möchtest."
+            )
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+
+        ordinal = re.search(
+            r"\b(?:nimm|verwende|wähl(?:e)?)\s+(?:die\s+)?"
+            r"(erste|zweite|dritte|vierte|fünfte|\d+)\b",
+            normalized,
+        )
+        if ordinal and self.conversation.presented_variants:
+            words = {
+                "erste": 1, "zweite": 2, "dritte": 3, "vierte": 4, "fünfte": 5,
+            }
+            index = words.get(ordinal.group(1), int(ordinal.group(1)) if ordinal.group(1).isdigit() else 0) - 1
+            if 0 <= index < len(self.conversation.presented_variants):
+                variant = self.conversation.presented_variants[index]
+                before = self.state.last_result
+                data = variant.input
+                self._undo_state = deepcopy(self.state)
+                self.state.parameters.update(
+                    dowel_diameter_d_mm=data.dowel_diameter_d_mm,
+                    rows_parallel_n=data.rows_parallel_n,
+                    rows_perpendicular_m=data.rows_perpendicular_m,
+                )
+                self.state.fixed_parameters.update(
+                    {"dowel_diameter_d_mm", "rows_parallel_n", "rows_perpendicular_m"}
+                )
+                self.state.requested_fastener_count = (
+                    data.rows_parallel_n * data.rows_perpendicular_m
+                )
+                self.state.last_result = variant.result
+                self.conversation.previous_result = before
+                self.conversation.last_intent = "UPDATE_PARAMETERS"
+                self.conversation.last_action = "UPDATE_PARAMETERS"
+                text = (
+                    f"Alles klar, Variante {index + 1} ist jetzt der aktuelle Entwurf: "
+                    f"{data.rows_parallel_n} × {data.rows_perpendicular_m} = "
+                    f"{variant.fastener_count} Stabdübel Ø{data.dowel_diameter_d_mm:g} mm, "
+                    f"Ausnutzung {variant.result.governing_check.utilization:.0%}."
+                )
+                return AssistantReply(text, variant.result, False, interpretation=text)
+
+        if re.search(r"\b(?:ist|is|war)\s+(?:das|des|die)\s+besser\b|was\s+war\s+vorher\s+besser", normalized):
+            self.conversation.last_intent = "COMPARE"
+            self.conversation.last_action = "COMPARE"
+            if (
+                self.conversation.previous_result is not None
+                and self.state.last_result is not None
+            ):
+                self._comparison_results = [
+                    self.conversation.previous_result,
+                    self.state.last_result,
+                ]
+                self.conversation.compared_results = list(self._comparison_results)
+            text = self._compare_variants()
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+
+        if re.fullmatch(r"warum\??", normalized):
+            self.conversation.last_intent = "EXPLAIN_RESULT"
+            self.conversation.last_action = "EXPLAIN_RESULT"
+            if len(self.conversation.compared_results) >= 2:
+                text = self._explain_last_comparison()
+            else:
+                text = self._explain_governing()
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+
+        if re.search(
+            r"^(?:und\s+)?(?:maximal|max\s*last)\??$|"
+            r"(?:was|wie\s*viel|wieviel).*(?:schafft|hält|geht).*maximal|"
+            r"was\s+schafft\s+(?:die|das)\s+maximal",
+            normalized,
+        ):
+            self.conversation.last_intent = "MAXIMUM_LOAD"
+            self.conversation.last_action = "MAXIMUM_LOAD"
+            text = self._maximum_load_text()
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+
+        if re.search(r"was\s+fehlt.*(?:noch|eigentlich)", normalized):
+            self.conversation.last_intent = "ASK_CURRENT_STATE"
+            self.conversation.last_action = "SHOW_STATE"
+            missing = self._missing_required_parameters()
+            text = (
+                self._missing_parameter_question(missing)
+                if missing else "Für den aktuellen Rechenauftrag fehlt nichts mehr."
+            )
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+        return None
+
+    def _explain_last_comparison(self) -> str:
+        results = self.conversation.compared_results
+        if len(results) < 2:
+            return self._explain_governing()
+        first, second = results[-2:]
+        first_eta = first.governing_check.utilization
+        second_eta = second.governing_check.utilization
+        more_reserve = first if first_eta < second_eta else second
+        fewer = min(
+            (first, second),
+            key=lambda result: (
+                result.input.rows_parallel_n * result.input.rows_perpendicular_m
+            ),
+        )
+        return (
+            "Der Vergleich beruht ausschließlich auf den beiden berechneten Ergebnissen: "
+            f"Mehr Reserve hat Ø{more_reserve.input.dowel_diameter_d_mm:g} mm mit "
+            f"{more_reserve.governing_check.utilization:.0%} Ausnutzung. Weniger "
+            f"Verbindungsmittel benötigt die Variante Ø{fewer.input.dowel_diameter_d_mm:g} mm "
+            f"mit {fewer.input.rows_parallel_n * fewer.input.rows_perpendicular_m} "
+            "Stabdübeln. Welche davon besser passt, hängt damit von deinem Ziel ab; "
+            "eine Kostenwertung ist nicht hinterlegt."
+        )
 
     def _extract(self, text: str) -> tuple[dict[str, Any], bool]:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -458,6 +773,7 @@ class StabduebelAssistant:
         normalized = text.lower().replace(",", ".")
         data: dict[str, Any] = {
             "intent": "PARAMETER_CHANGE",
+            "action": "UPDATE_PARAMETERS",
             "clarification_parameter": None,
             "force_ed_kn": None,
             "timber_grade": None,
@@ -507,6 +823,14 @@ class StabduebelAssistant:
             data["intent"] = "ASK_CURRENT_STATE"
         elif re.search(r"vergleich", normalized):
             data["intent"] = "COMPARE"
+        elif re.search(
+            r"warum.*(?:nutzungsklasse|k\s*mod|scherfug|schnittig|"
+            r"nettoquerschnitt|ausnutzung|lasteinwirkungsdauer)|"
+            r"was\s+(?:macht|bedeutet).*(?:k\s*mod|ausnutzung|"
+            r"lasteinwirkungsdauer)|unterschied.*schnittig",
+            normalized,
+        ):
+            data["intent"] = "GENERAL_ENGINEERING_QUESTION"
         elif re.search(r"(?:welchen|welcher).*k\s*mod|warum.*k\s*mod", normalized):
             data["intent"] = "GENERAL_ENGINEERING_QUESTION"
         elif re.search(r"was\s+(?:ist|bedeutet).*n[_\s-]?eff", normalized):
@@ -516,7 +840,11 @@ class StabduebelAssistant:
             or re.search(r"warum.*(?:variante|so\s+hoch|gewählt)", normalized)
             or re.search(r"welcher\s+nachweis.*(?:kritisch|maßgeb)", normalized)
             or re.search(r"warum.*(?:nicht|geht|ausreich)", normalized)
-            or re.search(r"was\s+würdest.*ändern|was.*verbessern|empfehl", normalized)
+            or re.search(
+                r"was\s+würdest.*(?:ändern|nehmen)|welche.*würdest.*nehmen|"
+                r"was.*verbessern|empfehl",
+                normalized,
+            )
         ):
             data["intent"] = "EXPLAIN_RESULT"
         elif re.search(r"(?:querschnitt).*(?:kleiner|größer)|(?:kleiner|größer).*(?:querschnitt)", normalized) and not re.search(r"\d", normalized):
@@ -598,13 +926,21 @@ class StabduebelAssistant:
             if larger:
                 data["dowel_diameter_d_mm"] = min(larger)
                 data["intent"] = "WHAT_IF"
+        elif re.search(r"probier.*größer|mach.*größer", normalized) and self.state.last_result is not None:
+            current = self.state.last_result.input.dowel_diameter_d_mm
+            larger = [d for d in SUPPORTED_DOWEL_DIAMETERS_MM if d > current]
+            if larger:
+                data["dowel_diameter_d_mm"] = min(larger)
+                data["intent"] = "WHAT_IF"
 
         plates = re.search(r"(\d+)\s*(?:stahl)?blech(?:e|en)?\b", normalized)
         if plates:
             data["number_of_plates_ns"] = int(plates.group(1))
 
         plate_thickness = re.search(
-            r"(?:blechdicke|blechstärke|blech)\s*(?:von\s*)?(\d+(?:\.\d+)?)\s*mm",
+            r"(?:blechdicke|blechstärke|(?:stahl)?blecht?)\s*"
+            r"(?:(?:von|mit)\s*)?(?:\d+\s*(?:stück\s*)?(?:,|und)\s*)?"
+            r"(\d+(?:\.\d+)?)\s*mm(?:\s*dick(?:e)?)?",
             normalized,
         )
         if not plate_thickness:
@@ -663,7 +999,8 @@ class StabduebelAssistant:
             data["intent"] = "OPTIMIZE"
 
         service_class = re.search(
-            r"\b(?:nutzungsklasse|nk|service\s*class)\s*([123])\b",
+            r"\b(?:nutzungsklasse|nuzungsklasse|nutzungsklase|nk|"
+            r"service\s*class)\s*([123])\b",
             normalized,
         )
         if service_class:
@@ -780,6 +1117,10 @@ class StabduebelAssistant:
                 data["width_b_mm"] = width_value
                 data["height_h_mm"] = height_value
                 return data
+            if 10.0 <= width_value < 50.0 and 10.0 <= height_value < 50.0:
+                data["width_b_mm"] = width_value * 10.0
+                data["height_h_mm"] = height_value * 10.0
+                return data
 
         width = re.search(
             rf"\bb\s*=\s*{number}\s*(mm|cm)\b",
@@ -869,7 +1210,8 @@ class StabduebelAssistant:
         ) or re.search(
             r"\b(?:1|ein(?:e|em|en|er|es)?)\s+innenliegende[snr]?\s+"
             r"(?:stahl)?blech\b|"
-            r"\bnur\s+(?:1|ein(?:e|em|en|er|es)?)\s+blech\b",
+            r"\bnur\s+(?:1|ein(?:e|em|en|er|es)?)\s+blech\b|"
+            r"\bein\s+blech\b",
             text,
             re.IGNORECASE,
         )
@@ -1215,6 +1557,52 @@ class StabduebelAssistant:
         return "\n".join(lines)
 
     def _answer_general_question(self, user_text: str) -> str:
+        normalized = user_text.lower()
+        if re.search(r"warum.*nutzungsklasse", normalized):
+            return (
+                "Die Nutzungsklasse beschreibt die Feuchtebedingungen der Verwendung. "
+                "Der Python-Code benötigt sie zusammen mit der Lasteinwirkungsdauer, "
+                f"um kmod deterministisch nach {KMOD_SOURCE} auszuwählen. Sie verändert "
+                "also nicht die Last, sondern den anzusetzenden Bemessungswert."
+            )
+        if re.search(r"lasteinwirkungsdauer", normalized):
+            return (
+                "Die Klasse der Lasteinwirkungsdauer ordnet ein, wie lange eine "
+                "Einwirkung typischerweise wirkt. Im implementierten Normmodell stehen "
+                "ständig, lang, mittel, kurz und sehr kurz zur Verfügung. Zusammen mit "
+                f"der Nutzungsklasse bestimmt sie kmod nach {KMOD_SOURCE}."
+            )
+        if re.search(r"vier.*scherfug|scherfug.*notwendig", normalized):
+            return (
+                "Die implementierte österreichische Gesamtvalidierung verlangt für "
+                "diesen tragenden Stabdübelanschluss mindestens vier Scherflächen. "
+                "Der Ein-Blech-Fall mit zwei Scherfugen kann nach dem implementierten "
+                "EC5-Grundmodell rechnerisch untersucht werden, bleibt in der "
+                "ÖNORM-B-Gesamtbewertung aber nicht zulässig."
+            )
+        if re.search(r"unterschied.*schnittig|ein-.*zweischnittig", normalized):
+            return (
+                "Die Schnittigkeit bezeichnet die Anzahl der Scherfugen, in denen ein "
+                "Verbindungsmittel beansprucht wird. Der unterstützte Aufbau Holz | "
+                "Stahlblech | Holz besitzt ein innenliegendes Blech und zwei "
+                "Scherfugen; er ist daher zweischnittig. Eine echte einschnittige "
+                "Verbindung ist ein anderer, hier nicht implementierter Anschlussfall."
+            )
+        if re.search(r"nettoquerschnitt", normalized):
+            return self._explain_governing()
+        if re.search(r"ausnutzung", normalized):
+            suffix = ""
+            if self.state.last_result is not None:
+                suffix = (
+                    f" Aktuell beträgt die höchste berechnete Ausnutzung "
+                    f"{self.state.last_result.governing_check.utilization:.0%}."
+                )
+            return (
+                "Eine Ausnutzung von 80 % bedeutet, dass der zugehörige Nachweis "
+                "80 % des berechneten Bemessungswiderstands beansprucht. Bis 100 % "
+                "besteht rechnerisch Reserve; zusätzlich muss die normative und "
+                "geometrische Validierung erfüllt sein." + suffix
+            )
         if re.search(r"k\s*mod", user_text, re.IGNORECASE):
             result = self.state.last_result
             if result is None:
@@ -1535,7 +1923,7 @@ class StabduebelAssistant:
         elif intent == "PARAMETER_CHANGE" and changed_labels:
             opening = "Alles klar – geändert auf " + ", ".join(changed_labels) + "."
         else:
-            opening = "Ich habe den Entwurf mit dem Python-Rechenkern geprüft."
+            opening = "Mit den aktuellen Vorgaben ergibt sich folgende berechnete Lösung."
         result_label = (
             "Ergebnis"
             if validation.admissible
