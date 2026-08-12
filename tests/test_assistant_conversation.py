@@ -61,7 +61,7 @@ def test_complete_natural_dialog_preserves_state_and_avoids_recalculation() -> N
 
     clarification = respond(assistant, "mach das blech dicker")
     assert "Welche Blechdicke" in clarification.text
-    assert "6 mm" in clarification.text
+    assert "5 mm" in clarification.text
     assert assistant.state.pending_clarification == "plate_thickness_ts_mm"
     assert assistant.state.parameters["force_ed_kn"] == 140.0
     assert assistant.state.parameters["timber_grade"] == "GL24h"

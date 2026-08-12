@@ -87,6 +87,24 @@ def test_visualizer_receives_complete_cross_section_geometry() -> None:
     assert visual.slot_allowance_mm == 1.0
 
 
+def test_visualizer_current_result_layers_and_fastener_count() -> None:
+    data = StabduebelInput(
+        width_b_mm=200.0,
+        height_h_mm=240.0,
+        number_of_plates_ns=2,
+        plate_thickness_ts_mm=5.0,
+        side_thickness_t1_mm=40.0,
+        middle_thickness_t2_mm=110.0,
+        dowel_diameter_d_mm=16.0,
+        rows_parallel_n=2,
+        rows_perpendicular_m=3,
+    )
+    visual = ConnectionVisualizerData.from_input(data)
+    assert visual.cross_section_layers_mm == (40.0, 5.0, 110.0, 5.0, 40.0)
+    assert sum(visual.cross_section_layers_mm) == 200.0
+    assert visual.fastener_count == 6
+
+
 def test_reference_calculation_remains_numerically_unchanged() -> None:
     result = calculate_stabduebel(StabduebelInput())
     assert result.side_timber["a_net_cm2"] == pytest.approx(113.28)

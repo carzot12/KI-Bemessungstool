@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+from difflib import get_close_matches
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +40,15 @@ PROMPT_PATH = Path(__file__).parent / "prompts" / "stabduebel_system.txt"
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
 TWO_SHEAR_ONE_INTERNAL_PLATE = "TWO_SHEAR_ONE_INTERNAL_PLATE"
 MULTI_SHEAR_TWO_INTERNAL_PLATES = "MULTI_SHEAR_TWO_INTERNAL_PLATES"
+GEOMETRY_OPTIMIZATION_VERIFIED = True
+KEYCHAIN_SERVICE = "KI-Bemessungstool OpenAI"
+
+
+class ParameterCategory(str, Enum):
+    USER_FIXED = "USER_FIXED"
+    DERIVED = "DERIVED"
+    OPTIMIZATION_VARIABLE = "OPTIMIZATION_VARIABLE"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
 
 
 EXTRACTION_SCHEMA: dict[str, Any] = {
@@ -153,6 +165,22 @@ class ConversationState:
     last_successful_result: StabduebelResult | None = None
     last_failed_action: str | None = None
     pending_geometry_proposal: dict[str, float] | None = None
+    autonomy_mode: bool = False
+    optimization_goal: str | None = None
+    last_recommendation: str | None = None
+    pending_state_proposal: dict[str, float | int | str] | None = None
+    previous_technical_state: dict[str, float | int | str] = field(default_factory=dict)
+    parameter_provenance: dict[str, str] = field(default_factory=dict)
+    parameter_sources: dict[str, str] = field(default_factory=dict)
+    current_explanation: str = ""
+
+    @property
+    def current_technical_state(self) -> dict[str, float | int | str]:
+        return self.parameters
+
+    @property
+    def user_fixed_constraints(self) -> set[str]:
+        return self.fixed_parameters
 
 
 @dataclass(slots=True)
@@ -190,6 +218,33 @@ class StabduebelAssistant:
         self.debug_enabled = os.getenv("STABDUEBEL_DEBUG", "").lower() in {
             "1", "true", "yes",
         }
+        self._api_key, self.llm_key_source = self._resolve_api_key()
+
+    @staticmethod
+    def _resolve_api_key() -> tuple[str | None, str]:
+        """Liest den Key ohne Einbettung aus Umgebung oder macOS-Keychain."""
+        environment_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if environment_key:
+            return environment_key, "environment"
+        if os.sys.platform == "darwin":
+            try:
+                completed = subprocess.run(
+                    ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                key = completed.stdout.strip()
+                if key:
+                    return key, "macos_keychain"
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return None, "local_fallback"
+
+    @property
+    def llm_available(self) -> bool:
+        return bool(self._api_key)
 
     def reset(self) -> None:
         self.state = ConversationState()
@@ -250,6 +305,27 @@ class StabduebelAssistant:
         extracted, used_llm = self._extract(user_text)
 
         intent = str(extracted["intent"])
+        normalized_goal = self._normalize_common_language(user_text.lower())
+        if re.search(r"möglichst\s+kompakt|kompakte?\s+geometrie", normalized_goal):
+            self.state.optimization_goal = "COMPACT_GEOMETRY"
+            intent = "OPTIMIZE"
+        elif re.search(r"mehr\s+reserve|geringere?\s+ausnutzung", normalized_goal):
+            self.state.optimization_goal = "LOWER_UTILIZATION"
+            self.state.minimize_fasteners = False
+            intent = "OPTIMIZE"
+        elif re.search(r"möglichst\s+dünn(?:es|e)?\s+blech", normalized_goal):
+            self.state.optimization_goal = "MIN_PLATE_THICKNESS"
+            intent = "OPTIMIZE"
+        elif re.search(r"gute\s+lösung|such.*was\s+gutes", normalized_goal):
+            self.state.optimization_goal = "BALANCED_DESIGN"
+            intent = "OPTIMIZE"
+        if intent in {"OPTIMIZE", "RECOMMEND_IMPROVEMENT"} or re.search(
+            r"\b(?:mach\w*\s+(?:du|selbst|selber)|entscheide\w*\s+du|"
+            r"selber\s+wählen|selbst\s+wählen|mach\w*\s+einen\s+vorschlag)\b",
+            user_text,
+            re.IGNORECASE,
+        ):
+            self.state.autonomy_mode = True
         self.conversation.last_intent = intent
         self.conversation.last_action = self._validated_action(extracted, intent)
         if intent == "PARAMETER_CHANGE" and not self._has_extracted_change(extracted):
@@ -326,6 +402,7 @@ class StabduebelAssistant:
 
         state_before_change = deepcopy(self.state)
         self._apply(extracted)
+        self.state.previous_technical_state = dict(state_before_change.parameters)
         self.state.pending_clarification = None
 
         geometry_error = self._geometry_consistency_error()
@@ -352,7 +429,12 @@ class StabduebelAssistant:
             )
 
         if intent in {"EXPLAIN_RESULT", "EXPLAIN_CHECK", "RECOMMEND_IMPROVEMENT"} or extracted["explain_governing"]:
-            if re.search(r"warum.*(?:diese\s+)?variante.*gewählt|warum.*diese\s+variante", user_text, re.IGNORECASE):
+            if re.search(
+                r"warum.*(?:diese\s+)?variante.*(?:gewählt|besser)|"
+                r"warum.*diese\s+variante",
+                user_text,
+                re.IGNORECASE,
+            ):
                 explanation = self._explain_selection()
             elif intent == "RECOMMEND_IMPROVEMENT" or re.search(
                 r"was\s+würdest.*ändern|was.*verbessern|empfehl|warum.*(?:nicht|geht)",
@@ -413,6 +495,7 @@ class StabduebelAssistant:
             minimize_fasteners=self.state.minimize_fasteners,
             maximize_utilization=self.state.maximize_utilization,
             required_fastener_count=self.state.requested_fastener_count,
+            optimization_goal=self.state.optimization_goal,
         )
         self.state.last_optimization = optimization
         if optimization.selected is None:
@@ -463,11 +546,24 @@ class StabduebelAssistant:
         self.state.parameters["rows_parallel_n"] = selected.input.rows_parallel_n
         self.state.parameters["rows_perpendicular_m"] = selected.input.rows_perpendicular_m
         self.state.parameters["dowel_diameter_d_mm"] = selected.input.dowel_diameter_d_mm
+        self._set_connection_state(selected.input.number_of_plates_ns)
+        self.state.parameters["plate_thickness_ts_mm"] = selected.input.plate_thickness_ts_mm
+        self.state.parameters["side_thickness_t1_mm"] = selected.input.side_thickness_t1_mm
+        self.state.parameters["middle_thickness_t2_mm"] = selected.input.middle_thickness_t2_mm
+        for key in (
+            "rows_parallel_n", "rows_perpendicular_m", "dowel_diameter_d_mm",
+            "number_of_plates_ns", "plate_thickness_ts_mm",
+            "side_thickness_t1_mm", "middle_thickness_t2_mm",
+        ):
+            if key not in self.state.fixed_parameters:
+                self.state.parameter_provenance[key] = "OPTIMIZED"
         self._undo_state = state_before_change
         if intent == "WHAT_IF" and previous_result is not None:
             self._comparison_results = [previous_result, selected.result]
             self.conversation.compared_results = list(self._comparison_results)
         ranking = self._ranked_variants_text(optimization)
+        interpretation = self._interpret_result(selected.result, optimization)
+        self.state.last_recommendation = interpretation
         return AssistantReply(
             self._format_result(selected.result, optimization, intent, extracted)
             + (self._what_if_delta(previous_result, selected.result) if intent == "WHAT_IF" else "")
@@ -475,7 +571,7 @@ class StabduebelAssistant:
             selected.result,
             used_llm,
             self._recognized_parameters(selected.result),
-            self._interpret_result(selected.result, optimization),
+            interpretation,
         )
 
     @staticmethod
@@ -614,7 +710,7 @@ class StabduebelAssistant:
         """Formuliert vorhandene strukturierte Fakten, rechnet aber nichts."""
         if (
             not reply.used_llm
-            or not os.getenv("OPENAI_API_KEY")
+            or not self._api_key
             or self.conversation.last_action
             not in {
                 "CALCULATE", "UPDATE_PARAMETERS", "OPTIMIZE", "WHAT_IF",
@@ -644,7 +740,7 @@ class StabduebelAssistant:
         try:
             from openai import OpenAI
 
-            response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).responses.create(
+            response = OpenAI(api_key=self._api_key).responses.create(
                 model=MODEL,
                 instructions=(
                     "Formuliere eine kurze, natürliche deutsche Antwort eines technischen "
@@ -666,7 +762,144 @@ class StabduebelAssistant:
         return reply.text
 
     def _handle_contextual_chat(self, user_text: str) -> AssistantReply | None:
-        normalized = user_text.lower().strip()
+        normalized = self._normalize_common_language(user_text.lower().strip())
+        if re.search(
+            r"(?:was\s+bedeutet|erklär|warum).*(?:lasteinwirkungsdauer|einwirkungsdauer)",
+            normalized,
+        ):
+            self.conversation.last_intent = "GENERAL_ENGINEERING_QUESTION"
+            self.conversation.last_action = "GET_TECHNICAL_RULE"
+            text = self._answer_general_question(user_text)
+            if self.state.parameters.get("load_duration_class") == "mittel":
+                text += " Für deinen aktuellen Entwurf ist „mittel“ bereits übernommen."
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+        if re.search(r"warum.*(?:ein|zwei|1|2)\s+blech", normalized):
+            self.conversation.last_intent = "EXPLAIN_RESULT"
+            self.conversation.last_action = "EXPLAIN_RESULT"
+            optimization = self.state.last_optimization
+            if optimization is None or self.state.last_result is None:
+                text = "Dazu liegt noch kein tatsächlich berechneter Variantenvergleich vor."
+            else:
+                admissible_by_plates = {
+                    count: sum(
+                        item.validation.admissible and item.result.passed
+                        for item in optimization.evaluated
+                        if item.input.number_of_plates_ns == count
+                    )
+                    for count in (1, 2)
+                }
+                chosen = self.state.last_result.input.number_of_plates_ns
+                if chosen == 2 and admissible_by_plates[1] == 0:
+                    text = (
+                        "Ich habe zwei Bleche gewählt, weil der Optimierer beide "
+                        f"implementierten Aufbauten real geprüft hat. Von den Ein-Blech-"
+                        f"Varianten erfüllen {admissible_by_plates[1]} die österreichische "
+                        "Gesamtzulässigkeit; der Aufbau besitzt nur zwei Scherflächen. "
+                        f"Beim Zwei-Blech-Aufbau wurden {admissible_by_plates[2]} "
+                        "rechnerisch erfüllte und normativ zulässige Varianten gefunden."
+                    )
+                else:
+                    text = (
+                        f"Der gewählte Aufbau mit {chosen} Blech(en) folgt dem aktiven "
+                        "Optimierungsziel und ausschließlich den tatsächlich berechneten, "
+                        "validierten Varianten."
+                    )
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+        if re.search(r"geht(?:'s|s|\s+es)?\s+auch\s+mit\s+einem", normalized):
+            return self._respond_technical("was wäre mit einem Stahlblech")
+        if (
+            self.state.pending_state_proposal
+            and re.fullmatch(r"(?:ja|passt|übernehmen|nimm\s+das|mach\s+das)[.!]?", normalized)
+        ):
+            proposal = self.state.pending_state_proposal
+            self.state.pending_state_proposal = None
+            if "service_class" in proposal:
+                return self._respond_technical(f"NK{int(proposal['service_class'])}")
+            if "load_duration_class" in proposal:
+                return self._respond_technical(str(proposal["load_duration_class"]))
+        if re.search(r"\b(?:beheizter?\s+innenraum|innenraum)\b", normalized):
+            duration = next(
+                (value for value in ("sehr kurz", "ständig", "mittel", "kurz", "lang")
+                 if re.search(rf"\b{re.escape(value)}\b", normalized)),
+                None,
+            )
+            if duration:
+                self.state.parameters["load_duration_class"] = duration
+                self.state.fixed_parameters.add("load_duration_class")
+                self.state.parameter_provenance["load_duration_class"] = "USER_FIXED"
+            if self.state.autonomy_mode and "service_class" not in self.state.fixed_parameters:
+                source = source_summary("nutzungsklasse")
+                explanation = (
+                    "Für den beschriebenen beheizten Innenraum setze ich auf Basis "
+                    "der hinterlegten Einordnung Nutzungsklasse 1 an."
+                    + (
+                        f" Die Lasteinwirkungsdauer „{duration}“ habe ich ebenfalls übernommen."
+                        if duration else ""
+                    )
+                )
+                self.state.parameters["service_class"] = 1
+                self.state.parameter_provenance["service_class"] = "KNOWLEDGE_DERIVED"
+                self.state.parameter_sources["service_class"] = source
+                self.state.current_explanation = explanation
+                self.state.pending_clarification = None
+                calculated = self._respond_technical("optimiere den aktuellen Entwurf")
+                return AssistantReply(
+                    explanation + "\n\n" + calculated.text,
+                    calculated.result,
+                    calculated.used_llm,
+                    calculated.recognized_parameters,
+                    calculated.interpretation,
+                )
+            self.state.pending_state_proposal = {"service_class": 1}
+            self.state.pending_clarification = "service_class"
+            self.conversation.last_intent = "CLARIFICATION_REQUIRED"
+            self.conversation.last_action = "GET_TECHNICAL_RULE"
+            source = source_summary("nutzungsklasse")
+            text = (
+                "Für einen beheizten Innenraum würde ich nach der hinterlegten "
+                "Einordnung Nutzungsklasse 1 ansetzen. "
+                + (f"Die Lasteinwirkungsdauer „{duration}“ habe ich übernommen. " if duration else "")
+                + "Soll ich damit rechnen?"
+                + (f" Quelle: {source}." if source else "")
+            )
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+        if re.search(r"\b(?:überdacht\s+außen|ueberdacht\s+aussen)\b", normalized):
+            self.state.pending_state_proposal = {"service_class": 2}
+            self.state.pending_clarification = "service_class"
+            self.conversation.last_intent = "CLARIFICATION_REQUIRED"
+            self.conversation.last_action = "GET_TECHNICAL_RULE"
+            text = (
+                "Für einen überdachten Außenbereich würde ich Nutzungsklasse 2 "
+                "vorschlagen. Soll ich diese Einordnung übernehmen? Quelle: "
+                + source_summary("nutzungsklasse") + "."
+            )
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+        if re.search(r"\b(?:dauerhaft\s+wirkende|dauernd\s+wirkende)\s+last\b", normalized):
+            self.state.pending_state_proposal = {"load_duration_class": "ständig"}
+            self.state.pending_clarification = "load_duration_class"
+            self.conversation.last_intent = "CLARIFICATION_REQUIRED"
+            self.conversation.last_action = "GET_TECHNICAL_RULE"
+            text = (
+                "Für eine dauerhaft wirkende Last würde ich die Klasse der "
+                "Lasteinwirkungsdauer „ständig“ vorschlagen. Soll ich sie übernehmen? "
+                "Quelle: " + source_summary("lasteinwirkungsdauer") + "."
+            )
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+        if re.fullmatch(r"(?:durchmesser\s+freigeben|dübel(?:durchmesser)?\s+freigeben)[.!]?", normalized):
+            self.state.fixed_parameters.discard("dowel_diameter_d_mm")
+            self.state.autonomy_mode = True
+            return self._respond_technical("optimiere den Durchmesser")
+        if re.search(
+            r"(?:t1\s+und\s+t2|aufteilung).*(?:selber|selbst|frei|optimier)|"
+            r"(?:selber|selbst).*(?:t1\s+und\s+t2|aufteilung)",
+            normalized,
+        ):
+            for key in ("side_thickness_t1_mm", "middle_thickness_t2_mm"):
+                self.state.fixed_parameters.discard(key)
+                self.state.parameters.pop(key, None)
+            self.state.pending_geometry_proposal = None
+            self.state.autonomy_mode = True
+            return self._respond_technical("optimiere die Querschnittsaufteilung")
         if (
             self.state.pending_geometry_proposal
             and re.fullmatch(r"(?:ja|passt|übernehmen|nimm\s+das|mach\s+das)[.!]?", normalized)
@@ -681,16 +914,8 @@ class StabduebelAssistant:
             r"optimier.*aufteilung|was\s+würdest\s+du\s+nehmen",
             normalized,
         ) and self._geometry_can_be_proposed():
-            self.conversation.last_intent = "CLARIFICATION_REQUIRED"
-            self.conversation.last_action = "ASK_MISSING_PARAMETERS"
-            text = (
-                "Eine allgemeingültige Mindestaufteilung ist in der verifizierten "
-                "Wissensbasis noch nicht hinterlegt. Ich kann eine Aufteilung daher "
-                "nicht frei erfinden. Gib mir t1 oder t2 vor; den jeweils anderen Wert "
-                "kann ich aus Gesamtbreite und Blechdicken geometrisch bestimmen und "
-                "anschließend mit Rechenkern und ÖNORM-Validator prüfen."
-            )
-            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+            self.state.autonomy_mode = True
+            return self._respond_technical("optimiere die Querschnittsaufteilung")
         if re.search(
             r"^(?:was\s+brauchst\s+du(?:\s+noch)?|was\s+fehlt(?:\s+noch)?|"
             r"fehlt\s+noch\s+was|kannst\s+du\s+schon\s+rechnen|hast\s+du\s+alles)\??$",
@@ -858,10 +1083,10 @@ class StabduebelAssistant:
         if re.fullmatch(r"warum\??", normalized):
             self.conversation.last_intent = "EXPLAIN_RESULT"
             self.conversation.last_action = "EXPLAIN_RESULT"
-            if self.state.last_failed_action:
-                text = self.state.last_failed_action
-            elif self.state.pending_clarification or self.conversation.missing_parameters:
+            if self.state.pending_clarification or self.conversation.missing_parameters:
                 text = self._why_missing_parameter()
+            elif self.state.last_failed_action:
+                text = self.state.last_failed_action
             elif len(self.conversation.compared_results) >= 2:
                 text = self._explain_last_comparison()
             else:
@@ -911,7 +1136,7 @@ class StabduebelAssistant:
         )
 
     def _extract(self, text: str) -> tuple[dict[str, Any], bool]:
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = self._api_key
         if api_key:
             try:
                 from openai import OpenAI
@@ -962,7 +1187,7 @@ class StabduebelAssistant:
 
     def _fallback_extract(self, text: str) -> dict[str, Any]:
         """Eng begrenzte Demo-Erkennung, falls kein API-Schlüssel gesetzt ist."""
-        normalized = text.lower().replace(",", ".")
+        normalized = self._normalize_common_language(text.lower().replace(",", "."))
         data: dict[str, Any] = {
             "intent": "PARAMETER_CHANGE",
             "action": "UPDATE_PARAMETERS",
@@ -1052,6 +1277,8 @@ class StabduebelAssistant:
             data["intent"] = "CLARIFICATION_REQUIRED"
             data["clarification_parameter"] = "dowel_diameter_d_mm"
         elif re.search(r"so\s+wenig|möglichst\s+wenig|wie\s+viele.*mindestens", normalized):
+            data["intent"] = "OPTIMIZE"
+        elif re.search(r"\boptimier\w*\b|\b(?:mach|entscheide|wähl)\w*\s+(?:du|selbst|selber)\b", normalized):
             data["intent"] = "OPTIMIZE"
         elif data["optimize_diameter"]:
             data["intent"] = "OPTIMIZE"
@@ -1260,6 +1487,28 @@ class StabduebelAssistant:
         data = self._enforce_cross_section_input(text, data)
         data = self._enforce_explicit_fastener_input(text, data)
         return self._enforce_plate_and_optimization_input(text, data)
+
+    @staticmethod
+    def _normalize_common_language(text: str) -> str:
+        """Generische Tippfehler-Toleranz des lokalen Sicherheits-Fallbacks.
+
+        Im LLM-Modus übernimmt das Sprachmodell die Semantik. Lokal werden nur
+        Tokens gegen ein kleines Fachvokabular abgeglichen, statt einzelne
+        fehlerhafte Sätze mit Sonder-RegEx zu codieren.
+        """
+        vocabulary = (
+            "stabdübel", "querschnitt", "blechdicke", "nutzungsklasse",
+            "innenraum", "einwirkungsdauer", "mittlere", "selber",
+            "möglichst", "wenig", "nehmen",
+        )
+        return re.sub(
+            r"[a-zäöüß]{5,}",
+            lambda match: (
+                get_close_matches(match.group(0), vocabulary, n=1, cutoff=0.78)
+                or [match.group(0)]
+            )[0],
+            text,
+        )
 
     @staticmethod
     def _enforce_explicit_diameter_input(
@@ -1520,6 +1769,10 @@ class StabduebelAssistant:
             self.state.fixed_parameters.update(
                 {"rows_parallel_n", "rows_perpendicular_m"}
             )
+            self.state.parameter_provenance.update({
+                "rows_parallel_n": "USER_FIXED",
+                "rows_perpendicular_m": "USER_FIXED",
+            })
             self.state.requested_fastener_count = int(rows_parallel) * int(
                 rows_perpendicular
             )
@@ -1546,6 +1799,7 @@ class StabduebelAssistant:
             if value is not None:
                 self.state.parameters[key] = value
                 self.state.fixed_parameters.add(key)
+                self.state.parameter_provenance[key] = "USER_FIXED"
                 if key == "number_of_plates_ns":
                     self._set_connection_state(int(value))
 
@@ -1562,9 +1816,11 @@ class StabduebelAssistant:
         if extracted.get("minimize_fasteners"):
             self.state.minimize_fasteners = True
             self.state.maximize_utilization = False
+            self.state.optimization_goal = "MIN_FASTENER_COUNT"
         if extracted.get("maximize_utilization"):
             self.state.maximize_utilization = True
             self.state.minimize_fasteners = False
+            self.state.optimization_goal = "MAXIMIZE_UTILIZATION"
         if extracted.get("top_n") is not None:
             self.state.requested_top_n = max(1, min(int(extracted["top_n"]), 20))
         if extracted.get("optimize_diameter"):
@@ -1929,14 +2185,17 @@ class StabduebelAssistant:
         )
 
     def _missing_required_parameters(self) -> list[str]:
+        """Nennt nur Parameter, die tatsächlich Benutzerklärung benötigen.
+
+        Freie Dübel-, Anordnungs- und Schichtgrößen werden bei aktivem
+        Autonomiemodus deterministisch untersucht. ``ts,L`` verwendet bis zu
+        einer expliziten Überschreibung den im Rechenkern dokumentierten
+        Modellwert; er ist deshalb kein normales Dialog-Pflichtfeld.
+        """
         required = (
             ("force_ed_kn", "Bemessungslast Fd"),
             ("timber_grade", "Holzfestigkeitsklasse"),
             ("width_b_mm", "Holzquerschnitt b × h"),
-            ("number_of_plates_ns", "Anschlussaufbau / innenliegende Stahlbleche"),
-            ("plate_thickness_ts_mm", "Stahlblechdicke"),
-            ("side_thickness_t1_mm", "Seitenholzdicke t1"),
-            ("slot_air_per_cut_ts_l_mm", "Schlitz-/Luftwert ts,L"),
             ("service_class", "Nutzungsklasse"),
             ("load_duration_class", "Klasse der Lasteinwirkungsdauer"),
         )
@@ -1945,13 +2204,11 @@ class StabduebelAssistant:
             if key not in self.state.parameters
             or (key == "width_b_mm" and "height_h_mm" not in self.state.parameters)
         ]
-        if (
-            self.state.parameters.get("number_of_plates_ns") == 2
-            and "middle_thickness_t2_mm" not in self.state.parameters
+        if not (
+            self.state.autonomy_mode
+            or self.state.minimize_fasteners
+            or self.state.maximize_utilization
         ):
-            insertion = missing.index("Schlitz-/Luftwert ts,L") if "Schlitz-/Luftwert ts,L" in missing else len(missing)
-            missing.insert(insertion, "Mittelholzdicke t2")
-        if not self.state.minimize_fasteners and not self.state.maximize_utilization:
             if "dowel_diameter_d_mm" not in self.state.fixed_parameters:
                 missing.append(
                     "Stabdübeldurchmesser oder ausdrückliches Optimierungsziel"
@@ -1963,7 +2220,55 @@ class StabduebelAssistant:
                 missing.append(
                     "Stabdübelanzahl/Anordnung oder ausdrückliches Optimierungsziel"
                 )
+            for key, label in (
+                ("number_of_plates_ns", "Anschlussaufbau / innenliegende Stahlbleche"),
+                ("plate_thickness_ts_mm", "Stahlblechdicke"),
+            ):
+                if key not in self.state.parameters:
+                    missing.append(label)
         return missing
+
+    def parameter_categories(self) -> dict[str, ParameterCategory]:
+        """Klassifiziert den aktuellen Technical State für Agent und Tests."""
+        categories: dict[str, ParameterCategory] = {}
+        for key in self.state.parameters:
+            categories[key] = (
+                ParameterCategory.USER_FIXED
+                if key in self.state.fixed_parameters
+                else ParameterCategory.DERIVED
+            )
+        for key in (
+            "dowel_diameter_d_mm", "rows_parallel_n", "rows_perpendicular_m",
+            "number_of_plates_ns", "plate_thickness_ts_mm",
+        ):
+            if key not in self.state.fixed_parameters:
+                categories[key] = ParameterCategory.OPTIMIZATION_VARIABLE
+        for key in ("side_thickness_t1_mm", "middle_thickness_t2_mm"):
+            if key not in self.state.fixed_parameters:
+                categories[key] = (
+                    ParameterCategory.OPTIMIZATION_VARIABLE
+                    if GEOMETRY_OPTIMIZATION_VERIFIED
+                    else ParameterCategory.NEEDS_CLARIFICATION
+                )
+        categories["slot_air_per_cut_ts_l_mm"] = (
+            ParameterCategory.USER_FIXED
+            if "slot_air_per_cut_ts_l_mm" in self.state.fixed_parameters
+            else ParameterCategory.DERIVED
+        )
+        clarification_keys = {
+            "Bemessungslast Fd": "force_ed_kn",
+            "Holzfestigkeitsklasse": "timber_grade",
+            "Holzquerschnitt b × h": "width_b_mm",
+            "Anschlussaufbau / innenliegende Stahlbleche": "number_of_plates_ns",
+            "Stahlblechdicke": "plate_thickness_ts_mm",
+            "Nutzungsklasse": "service_class",
+            "Klasse der Lasteinwirkungsdauer": "load_duration_class",
+        }
+        for label in self._missing_required_parameters():
+            key = clarification_keys.get(label)
+            if key:
+                categories[key] = ParameterCategory.NEEDS_CLARIFICATION
+        return categories
 
     def _current_state_text(self) -> str:
         result_input = self.state.last_result.input if self.state.last_result else None

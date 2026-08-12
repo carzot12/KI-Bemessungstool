@@ -35,6 +35,18 @@ Es wird kein API-Key in die App oder in den Build eingebettet. Ohne gesetzten
 Soll das OpenAI-LLM verwendet werden, muss der Schlüssel außerhalb des
 Repositories in der Benutzerumgebung von macOS bereitgestellt werden.
 
+Für einen Start per Finder kann der Schlüssel sicher im macOS-Schlüsselbund
+unter dem Dienstnamen `KI-Bemessungstool OpenAI` gespeichert werden:
+
+```bash
+security add-generic-password -U -s "KI-Bemessungstool OpenAI" \
+  -a "$USER" -w
+```
+
+Der Befehl fragt den Wert verdeckt ab. Die App prüft zuerst
+`OPENAI_API_KEY`, danach diesen Schlüsselbund-Eintrag. Der Schlüssel wird
+weder in Git noch in das App-Bundle geschrieben.
+
 Die normale Entwicklung bleibt unverändert möglich:
 
 ```bash

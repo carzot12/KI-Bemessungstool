@@ -19,10 +19,65 @@ class SourceReference:
     priority: int
 
 
+@dataclass(frozen=True, slots=True)
+class KnowledgeEntry:
+    topic: str
+    statement: str
+    value: str | int | float | None
+    document: str
+    reference: str
+    norm_mode: str
+    verification_status: str
+
+
 IHBV_EXAMPLES = "IHBV Beispielsammlung ÖNORM, Ausgabe 2022"
 IHBV_TABLES = "IHBV Holzbau-Kompakt Tabellenwerk, Ausgabe 2017"
 OENORM_EN = "ÖNORM EN 1995-1-1:2019"
 OENORM_B = "ÖNORM B 1995-1-1:2023"
+
+KNOWLEDGE_ENTRIES: tuple[KnowledgeEntry, ...] = (
+    KnowledgeEntry(
+        "nutzungsklasse_innenraum",
+        "Ein üblicher beheizter Innenraum wird Nutzungsklasse 1 zugeordnet.",
+        1, OENORM_EN, "Abschnitt 2.3.1.3", "OENORM", "VERIFIED",
+    ),
+    KnowledgeEntry(
+        "nutzungsklasse_ueberdacht_aussen",
+        "Ein überdachter Außenbereich wird bei passenden Feuchtebedingungen Nutzungsklasse 2 zugeordnet.",
+        2, OENORM_EN, "Abschnitt 2.3.1.3", "OENORM", "VERIFIED",
+    ),
+    KnowledgeEntry(
+        "kmod",
+        "kmod wird deterministisch aus Nutzungsklasse und Lasteinwirkungsdauer gewählt.",
+        None, IHBV_TABLES, "Tabelle III.5", "OENORM", "VERIFIED",
+    ),
+    KnowledgeEntry(
+        "slot_allowance",
+        "ts,L ist eine separate Schlitz-/Luftberücksichtigung und nicht die Stahlblechdicke.",
+        1.0, "Verifizierte Referenzrechnung", "Zugstoß-Stabdübelanschluss",
+        "REFERENCE_MODEL", "MODEL_ASSUMPTION",
+    ),
+    KnowledgeEntry(
+        "stahlblechdicke_suchraum",
+        "5 mm ist für einen Zuglaschenstoß mit innenliegendem Stahlblech belegt.",
+        5.0, IHBV_TABLES, "Tabelle V.29, Ablesebeispiel", "OENORM", "VERIFIED",
+    ),
+    KnowledgeEntry(
+        "stahlblechdicke_suchraum",
+        "6 mm ist die Stahlblechdicke des verifizierten Projekt-Referenzfalls.",
+        6.0, "Zugstoß_Stabdübelanschluss_Berechnungsbeispiel.pdf",
+        "Eingabedaten und Referenzrechnung", "REFERENCE_MODEL", "VERIFIED",
+    ),
+)
+
+
+def get_knowledge(topic: str) -> tuple[KnowledgeEntry, ...]:
+    normalized = topic.casefold().replace("ß", "ss").replace("-", "_")
+    return tuple(
+        entry for entry in KNOWLEDGE_ENTRIES
+        if normalized in entry.topic.casefold().replace("ß", "ss")
+        or entry.topic.casefold().replace("ß", "ss") in normalized
+    )
 
 SOURCE_REFERENCES: tuple[SourceReference, ...] = (
     SourceReference(

@@ -143,6 +143,7 @@ class StabduebelApp(ctk.CTk):
         y = max(0, (screen_height - height) // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
         self.minsize(min(1120, screen_width), min(720, screen_height))
+        self.after(0, self._maximize_window)
         self.configure(fg_color=self.BG)
 
         self.materials = TimberMaterialRepository()
@@ -152,10 +153,20 @@ class StabduebelApp(ctk.CTk):
         self.manual_service_class = tk.StringVar(value="1")
         self.manual_load_duration = tk.StringVar(value="mittel")
         self.manual_kmod_text = tk.StringVar(value="automatisch: 0,80")
+        self.workspace_mode = tk.StringVar(value="✦ KI Workspace")
 
         self._build_header()
         self._build_tabs()
         self._load_manual_defaults()
+
+    def _maximize_window(self) -> None:
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            try:
+                self.attributes("-zoomed", True)
+            except tk.TclError:
+                pass
 
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, height=92, corner_radius=0, fg_color=self.CARD)
@@ -198,38 +209,116 @@ class StabduebelApp(ctk.CTk):
             font=ctk.CTkFont(size=15, weight="bold"),
         ).pack(anchor="e")
         self.header_ai_status = ctk.CTkLabel(
-            status, text="KI · bereit", text_color=self.MUTED,
+            status, text="○ KI BEREIT", text_color=self.MUTED,
             font=ctk.CTkFont(size=11),
         )
         self.header_ai_status.pack(anchor="e", pady=(4, 0))
 
-    def _build_tabs(self) -> None:
-        self.tabs = ctk.CTkTabview(
-            self,
-            fg_color=self.BG,
-            segmented_button_selected_color=self.RED,
-            segmented_button_selected_hover_color=self.RED_DARK,
+        self.mode_switch = ctk.CTkSegmentedButton(
+            header,
+            values=["✦ KI Workspace", "Kompakt", "Manuell"],
+            variable=self.workspace_mode,
+            command=self._show_mode,
+            selected_color=self.RED,
+            selected_hover_color=self.RED_DARK,
+            unselected_color="#E5E7EB",
+            unselected_hover_color="#D8DCE1",
+            text_color=self.TEXT,
+            width=390,
+            height=34,
         )
-        self.tabs.pack(fill="both", expand=True, padx=26, pady=18)
-        assistant_tab = self.tabs.add("KI-Assistent")
-        manual_tab = self.tabs.add("Manuelle Eingabe")
-        self._build_assistant_tab(assistant_tab)
-        self._build_manual_tab(manual_tab)
+        self.mode_switch.place(relx=0.57, rely=0.5, anchor="center")
+
+    def _build_tabs(self) -> None:
+        self.workspace_container = ctk.CTkFrame(self, fg_color=self.BG)
+        self.workspace_container.pack(fill="both", expand=True, padx=18, pady=12)
+        self.workspace_container.grid_rowconfigure(0, weight=1)
+        self.workspace_container.grid_columnconfigure(0, weight=1)
+        self.mode_frames: dict[str, ctk.CTkFrame] = {}
+        for name in ("✦ KI Workspace", "Kompakt", "Manuell"):
+            frame = ctk.CTkFrame(self.workspace_container, fg_color=self.BG)
+            frame.grid(row=0, column=0, sticky="nsew")
+            self.mode_frames[name] = frame
+        self._build_assistant_tab(self.mode_frames["✦ KI Workspace"])
+        self._build_compact_tab(self.mode_frames["Kompakt"])
+        self._build_manual_tab(self.mode_frames["Manuell"])
+        self._show_mode("✦ KI Workspace")
+
+    def _show_mode(self, mode: str) -> None:
+        if mode not in self.mode_frames:
+            return
+        self.workspace_mode.set(mode)
+        if mode == "Manuell" and self.assistant.state.last_result is not None:
+            data = self.assistant.state.last_result.input
+            self.timber_grade.set(data.timber_grade)
+            self.manual_service_class.set(str(data.service_class))
+            self.manual_load_duration.set(data.load_duration_class)
+            for key, entry in self.entries.items():
+                if hasattr(data, key):
+                    entry.delete(0, "end")
+                    entry.insert(0, str(getattr(data, key)))
+        self.mode_frames[mode].tkraise()
+
+    def _select_workspace_section(self, section: str) -> None:
+        for label, button in self.sidebar_buttons.items():
+            active = label == section
+            button.configure(
+                fg_color="#FFFFFF" if active else "transparent",
+                text_color=self.RED if active else self.TEXT,
+                text=("●" if active else "○") + f"  {label}",
+            )
+        messages = {
+            "Entwurf": "Aktueller Entwurf und KI-Entscheidungen.",
+            "Varianten": "Die vertiefte Variantenansicht folgt in Phase 2. Reale Varianten bleiben im aktuellen Optimierungsergebnis verfügbar.",
+            "Nachweise": "Alle vorhandenen Einzelnachweise stehen im scrollbaren Ergebnisbereich rechts.",
+            "Quellen": "Verwendete Knowledge-Base-Quellen werden im Bereich Technische Einordnung angezeigt.",
+            "Bericht": "Die Berichtsvorschau wird in Phase 2 ergänzt; es wird noch kein neuer Bericht erzeugt.",
+        }
+        self.technical_explanation.configure(text=messages[section])
 
     def _build_assistant_tab(self, tab: ctk.CTkFrame) -> None:
-        tab.grid_columnconfigure(0, weight=6, minsize=500)
-        tab.grid_columnconfigure(1, weight=5, minsize=430)
+        tab.grid_columnconfigure(0, weight=0, minsize=190)
+        tab.grid_columnconfigure(1, weight=6, minsize=430)
+        tab.grid_columnconfigure(2, weight=5, minsize=410)
         tab.grid_rowconfigure(0, weight=5)
-        tab.grid_rowconfigure(1, weight=6)
+        tab.grid_rowconfigure(1, weight=2)
+        tab.grid_rowconfigure(2, weight=5)
+
+        sidebar = ctk.CTkFrame(tab, width=196, fg_color="#ECEEF1", corner_radius=14)
+        sidebar.grid(row=0, column=0, rowspan=3, sticky="nsew", padx=(0, 8), pady=6)
+        sidebar.grid_propagate(False)
+        ctk.CTkLabel(
+            sidebar, text="PROJEKT", text_color=self.MUTED,
+            font=ctk.CTkFont(size=10, weight="bold"),
+        ).pack(anchor="w", padx=18, pady=(22, 10))
+        self.sidebar_buttons: dict[str, ctk.CTkButton] = {}
+        for index, (label, symbol) in enumerate((
+            ("Entwurf", "●"), ("Varianten", "○"), ("Nachweise", "○"),
+            ("Quellen", "○"), ("Bericht", "○"),
+        )):
+            button = ctk.CTkButton(
+                sidebar, text=f"{symbol}  {label}", anchor="w", height=38,
+                fg_color="#FFFFFF" if index == 0 else "transparent",
+                hover_color="#FFFFFF", text_color=self.RED if index == 0 else self.TEXT,
+                command=lambda item=label: self._select_workspace_section(item),
+            )
+            button.pack(fill="x", padx=10, pady=2)
+            self.sidebar_buttons[label] = button
+        ctk.CTkLabel(
+            sidebar,
+            text="Zuglaschenstoß\nStabdübel · Zug",
+            justify="left", text_color=self.MUTED,
+            font=ctk.CTkFont(size=10),
+        ).pack(side="bottom", anchor="w", padx=18, pady=20)
 
         chat_card = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
-        chat_card.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(8, 10), pady=10)
+        chat_card.grid(row=0, column=1, sticky="nsew", padx=8, pady=(6, 4))
         chat_card.grid_columnconfigure(0, weight=1)
         chat_card.grid_rowconfigure(1, weight=1)
 
         ctk.CTkLabel(
             chat_card,
-            text="Entwurfsdialog",
+            text="✦ KI Copilot",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color=self.TEXT,
         ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 8))
@@ -245,11 +334,20 @@ class StabduebelApp(ctk.CTk):
         self.chat.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 12))
         self.chat.insert(
             "end",
-            "Assistent:\nBeschreiben Sie Last, Holzklasse und Entwurfsziel. "
+            "✦ KI\nBeschreibe Last, Holzklasse und Entwurfsziel. "
             "Zum Beispiel: ‚Bemesse einen Stabdübelanschluss für 140 kN mit "
             "GL24h und möglichst wenigen Stabdübeln.‘\n\n",
         )
         self.chat.configure(state="disabled")
+        self.chat._textbox.tag_configure(  # type: ignore[attr-defined]
+            "user_message", background="#F0F1F3", foreground=self.TEXT,
+            lmargin1=18, lmargin2=18, rmargin=70, spacing1=8, spacing3=12,
+        )
+        self.chat._textbox.tag_add("ai_message", "1.0", "end")  # type: ignore[attr-defined]
+        self.chat._textbox.tag_configure(  # type: ignore[attr-defined]
+            "ai_message", background="#FFFFFF", foreground=self.TEXT,
+            lmargin1=18, lmargin2=18, rmargin=28, spacing1=8, spacing3=14,
+        )
         self.chat.bind("<B1-Motion>", self._chat_selection_autoscroll, add="+")
         self.chat.bind("<Command-c>", self._copy_chat_selection)
         self.chat.bind("<Control-c>", self._copy_chat_selection)
@@ -262,8 +360,18 @@ class StabduebelApp(ctk.CTk):
         self.new_message_button.grid(row=2, column=0, sticky="e", padx=20, pady=(0, 6))
         self.new_message_button.grid_remove()
 
+        self.engineering_status = ctk.CTkLabel(
+            chat_card,
+            text="",
+            justify="left", anchor="w", text_color=self.MUTED,
+            fg_color="#F6F7F8", corner_radius=10,
+            font=ctk.CTkFont(size=11),
+        )
+        self.engineering_status.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 8))
+        self.engineering_status.grid_remove()
+
         input_row = ctk.CTkFrame(chat_card, fg_color="transparent")
-        input_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 18))
+        input_row.grid(row=4, column=0, sticky="ew", padx=20, pady=(0, 18))
         input_row.grid_columnconfigure(0, weight=1)
         self.assistant_entry = ctk.CTkTextbox(
             input_row,
@@ -275,28 +383,75 @@ class StabduebelApp(ctk.CTk):
             fg_color="#FFFFFF",
         )
         self.assistant_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self._chat_placeholder = "Beschreibe deinen Anschluss oder frag die KI …"
+        self.assistant_entry.insert("1.0", self._chat_placeholder)
+        self.assistant_entry.configure(text_color=self.MUTED)
+        self.assistant_entry.bind("<FocusIn>", self._clear_chat_placeholder, add="+")
         self.assistant_entry.bind("<Return>", self._on_chat_enter)
         self.assistant_entry.bind("<Shift-Return>", self._on_chat_shift_enter)
         self.send_button = ctk.CTkButton(
             input_row,
-            text="Senden",
-            width=100,
+            text="↑",
+            width=52,
             height=52,
+            corner_radius=18,
             fg_color=self.RED,
             hover_color=self.RED_DARK,
             command=self._send_to_assistant,
         )
         self.send_button.grid(row=0, column=1)
 
+        technical_panel = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
+        technical_panel.grid(
+            row=1, column=1, rowspan=2, sticky="nsew", padx=8, pady=(4, 6)
+        )
+        technical_panel.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            technical_panel, text="Technische Einordnung",
+            font=ctk.CTkFont(size=17, weight="bold"), text_color=self.TEXT,
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(15, 5))
+        self.technical_classification = ctk.CTkLabel(
+            technical_panel, text="Noch keine technischen Werte.",
+            justify="left", anchor="nw", text_color=self.TEXT,
+            font=ctk.CTkFont(size=11),
+        )
+        self.technical_classification.grid(row=1, column=0, sticky="ew", padx=18)
+        ctk.CTkLabel(
+            technical_panel, text="Warum? / Erklärung",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=self.TEXT,
+        ).grid(row=2, column=0, sticky="w", padx=18, pady=(10, 2))
+        self.technical_explanation = ctk.CTkLabel(
+            technical_panel, text="–", justify="left", anchor="w",
+            wraplength=510, text_color=self.MUTED, font=ctk.CTkFont(size=10),
+        )
+        self.technical_explanation.grid(row=3, column=0, sticky="ew", padx=18)
+        self.technical_source = ctk.CTkLabel(
+            technical_panel, text="Quelle: –", justify="left", anchor="w",
+            wraplength=510, text_color=self.MUTED, font=ctk.CTkFont(size=9),
+        )
+        self.technical_source.grid(row=4, column=0, sticky="ew", padx=18, pady=(5, 14))
+
         self.ai_visualizer = ConnectionVisualizer(tab)
         self.ai_visualizer.grid(
-            row=0, column=1, sticky="nsew", padx=(10, 8), pady=(10, 5)
+            row=0, column=2, sticky="nsew", padx=(8, 0), pady=(6, 4)
         )
 
-        result_card = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
-        result_card.grid(row=1, column=1, sticky="nsew", padx=(10, 8), pady=(5, 10))
+        current_design = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
+        current_design.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=4)
+        ctk.CTkLabel(
+            current_design, text="AKTUELLER ENTWURF",
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=self.MUTED,
+        ).pack(anchor="w", padx=16, pady=(12, 4))
+        self.current_design_summary = ctk.CTkLabel(
+            current_design, text="Noch kein berechneter Entwurf.",
+            justify="left", anchor="w", text_color=self.TEXT,
+            font=ctk.CTkFont(size=11),
+        )
+        self.current_design_summary.pack(fill="x", padx=16, pady=(0, 12))
+
+        result_card = ctk.CTkScrollableFrame(tab, fg_color=self.CARD, corner_radius=14)
+        result_card.grid(row=2, column=2, sticky="nsew", padx=(8, 0), pady=(4, 6))
         result_card.grid_columnconfigure(0, weight=1)
-        result_card.grid_rowconfigure(6, weight=1)
         ctk.CTkLabel(
             result_card,
             text="Berechnungsergebnis",
@@ -311,12 +466,6 @@ class StabduebelApp(ctk.CTk):
         )
         self.ai_mode_label.grid(row=1, column=0, sticky="w", padx=20)
 
-        ctk.CTkLabel(
-            result_card,
-            text="Erkannte Vorgaben",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=self.TEXT,
-        ).grid(row=2, column=0, sticky="w", padx=20, pady=(14, 4))
         self.recognized_values = ctk.CTkLabel(
             result_card,
             text="Noch keine Vorgaben erkannt.",
@@ -326,6 +475,7 @@ class StabduebelApp(ctk.CTk):
             text_color=self.MUTED,
         )
         self.recognized_values.grid(row=3, column=0, sticky="ew", padx=20)
+        self.recognized_values.grid_remove()
 
         self.ai_status_frame = ctk.CTkFrame(
             result_card,
@@ -376,13 +526,14 @@ class StabduebelApp(ctk.CTk):
         ).grid(row=5, column=0, sticky="w", padx=20, pady=(5, 3))
         self.ai_result = ctk.CTkTextbox(
             result_card,
+            height=270,
             wrap="word",
             font=ctk.CTkFont(family="Courier", size=12),
             fg_color="#F8F9FA",
             border_width=1,
             border_color=self.BORDER,
         )
-        self.ai_result.grid(row=6, column=0, sticky="nsew", padx=20, pady=(0, 8))
+        self.ai_result.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 8))
         self.ai_result.configure(state="disabled")
 
         ctk.CTkLabel(
@@ -428,6 +579,108 @@ class StabduebelApp(ctk.CTk):
             text_color=self.TEXT,
             command=self._reset_assistant,
         ).grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 18))
+
+    def _build_compact_tab(self, tab: ctk.CTkFrame) -> None:
+        tab.grid_columnconfigure(0, weight=4)
+        tab.grid_columnconfigure(1, weight=6)
+        tab.grid_rowconfigure(0, weight=1)
+        self.compact_force = tk.StringVar(value="140")
+        self.compact_grade = tk.StringVar(value="GL24h")
+        self.compact_width = tk.StringVar(value="200")
+        self.compact_height = tk.StringVar(value="240")
+        self.compact_service = tk.StringVar(value="1")
+        self.compact_duration = tk.StringVar(value="mittel")
+        self.compact_goal = tk.StringVar(value="wenig Stabdübel")
+
+        form = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=16)
+        form.grid(row=0, column=0, sticky="nsew", padx=(6, 8), pady=6)
+        form.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            form, text="Zuglaschenstoß", font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=self.TEXT,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=24, pady=(24, 4))
+        ctk.CTkLabel(
+            form, text="Schnelle KI-gestützte Vorbemessung", text_color=self.MUTED,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=24, pady=(0, 18))
+        fields = (
+            ("FEd [kN]", self.compact_force, None),
+            ("Holzklasse", self.compact_grade, list(self.materials.grades())),
+            ("Breite b [mm]", self.compact_width, None),
+            ("Höhe h [mm]", self.compact_height, None),
+            ("Nutzungsklasse", self.compact_service, ["1", "2", "3"]),
+            ("Lasteinwirkungsdauer", self.compact_duration, list(LOAD_DURATION_CLASSES)),
+        )
+        for row, (label, variable, values) in enumerate(fields, start=2):
+            ctk.CTkLabel(form, text=label, anchor="w", text_color=self.TEXT).grid(
+                row=row, column=0, sticky="w", padx=24, pady=7
+            )
+            widget = (
+                ctk.CTkComboBox(form, variable=variable, values=values, state="readonly")
+                if values else ctk.CTkEntry(form, textvariable=variable)
+            )
+            widget.grid(row=row, column=1, sticky="ew", padx=(12, 24), pady=7)
+        ctk.CTkLabel(form, text="Optimierungsziel", text_color=self.TEXT).grid(
+            row=8, column=0, sticky="w", padx=24, pady=(18, 7)
+        )
+        ctk.CTkSegmentedButton(
+            form, values=["wenig Stabdübel", "mehr Reserve", "kompakt"],
+            variable=self.compact_goal, selected_color=self.RED,
+        ).grid(row=9, column=0, columnspan=2, sticky="ew", padx=24, pady=7)
+        ctk.CTkButton(
+            form, text="✦ KI optimieren", height=46, fg_color=self.RED,
+            hover_color=self.RED_DARK, command=self._run_compact,
+        ).grid(row=10, column=0, columnspan=2, sticky="ew", padx=24, pady=(20, 10))
+        ctk.CTkButton(
+            form, text="Weitere Einstellungen  ›", height=34,
+            fg_color="transparent", hover_color="#F2F3F5", text_color=self.TEXT,
+            command=lambda: self._show_mode("Manuell"),
+        ).grid(row=11, column=0, columnspan=2, sticky="ew", padx=24, pady=(0, 20))
+
+        right = ctk.CTkFrame(tab, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 6), pady=6)
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=3)
+        right.grid_rowconfigure(1, weight=2)
+        self.compact_visualizer = ConnectionVisualizer(right)
+        self.compact_visualizer.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
+        result = ctk.CTkFrame(right, fg_color=self.CARD, corner_radius=16)
+        result.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
+        self.compact_result = ctk.CTkLabel(
+            result, text="Noch kein Ergebnis", justify="left", anchor="nw",
+            text_color=self.MUTED, font=ctk.CTkFont(size=15),
+        )
+        self.compact_result.pack(fill="both", expand=True, padx=24, pady=22)
+
+    def _run_compact(self) -> None:
+        goal = {
+            "wenig Stabdübel": "möglichst wenige Stabdübel",
+            "mehr Reserve": "mehr Reserve",
+            "kompakt": "möglichst kompakte Geometrie",
+        }[self.compact_goal.get()]
+        prompt = (
+            f"{self.compact_force.get()} kN {self.compact_grade.get()} "
+            f"{self.compact_width.get()}x{self.compact_height.get()} mm "
+            f"NK{self.compact_service.get()} {self.compact_duration.get()}, "
+            f"{goal}, rest mach selber"
+        )
+        self._append_chat("Du", prompt)
+        reply = self.assistant.respond(prompt)
+        self._show_assistant_reply(reply)
+        if reply.result:
+            result = reply.result
+            data = result.input
+            status = "✓ NACHWEIS ERFÜLLT" if validate_oenorm(data, result).admissible else "✕ NICHT ERFÜLLT"
+            self.compact_result.configure(
+                text=(
+                    f"{status}\n\nη = {result.governing_check.utilization:.0%}\n"
+                    f"Maßgebend: {result.governing_check.name}\n\n"
+                    f"{data.rows_parallel_n} × {data.rows_perpendicular_m} = "
+                    f"{data.rows_parallel_n * data.rows_perpendicular_m} Stabdübel · "
+                    f"Ø{data.dowel_diameter_d_mm:g} mm"
+                ),
+                text_color=self.GREEN if validate_oenorm(data, result).admissible else self.RED,
+            )
+            self.compact_visualizer.update_input(data, result)
 
     def _build_manual_tab(self, tab: ctk.CTkFrame) -> None:
         tab.grid_columnconfigure(0, weight=2)
@@ -642,12 +895,20 @@ class StabduebelApp(ctk.CTk):
 
     def _send_to_assistant(self) -> None:
         text = self.assistant_entry.get("1.0", "end-1c").strip()
-        if not text:
+        if not text or text == self._chat_placeholder:
             return
         self.assistant_entry.delete("1.0", "end")
         self.assistant_entry.focus_set()
         self._append_chat("Sie", text)
-        self.send_button.configure(state="disabled", text="Berechnet …")
+        self.send_button.configure(state="disabled", text="…")
+        self.engineering_status.configure(
+            text=(
+                "✦ Entwurf wird untersucht\n"
+                "Geometrie  ✓    Material  ✓    Stabdübel  ●\n"
+                "Blechvarianten  ●    ÖNORM-Prüfung  ○    Ranking  ○"
+            )
+        )
+        self.engineering_status.grid()
         self.ai_mode_label.configure(text="Anfrage wird verarbeitet …")
         self.header_ai_status.configure(text="KI · verarbeitet …", text_color=self.RED)
         threading.Thread(target=self._assistant_worker, args=(text,), daemon=True).start()
@@ -666,12 +927,13 @@ class StabduebelApp(ctk.CTk):
         )
         self.ai_mode_label.configure(text=mode)
         self.header_ai_status.configure(
-            text="KI · online" if reply.used_llm else "KI · lokaler Modus",
+            text="● KI ONLINE" if reply.used_llm else "○ LOKALER MODUS",
             text_color=self.GREEN if reply.used_llm else self.MUTED,
         )
         self.recognized_values.configure(
             text=reply.recognized_parameters or "Noch keine Vorgaben erkannt."
         )
+        self._update_technical_classification(reply)
         self._set_text(self.ai_interpretation, reply.interpretation)
         if reply.result:
             self._set_text(self.ai_result, self._detailed_result(reply.result))
@@ -679,29 +941,122 @@ class StabduebelApp(ctk.CTk):
             self.ai_visualizer.update_input(reply.result.input, reply.result)
         else:
             self._clear_status_block()
-        self.send_button.configure(state="normal", text="Senden")
+        optimization = self.assistant.state.last_optimization
+        if optimization is not None:
+            self.engineering_status.configure(
+                text=(
+                    f"✓ {optimization.evaluated_count} Varianten analysiert\n"
+                    f"✓ {optimization.feasible_count} zulässige Varianten\n"
+                    + ("✓ beste Variante ausgewählt" if optimization.selected else "○ keine geeignete Variante ausgewählt")
+                ),
+                text_color=self.GREEN if optimization.selected else self.RED,
+            )
+            self.engineering_status.grid()
+        else:
+            self.engineering_status.grid_remove()
+        self.send_button.configure(state="normal", text="↑")
         self.assistant_entry.focus_set()
 
     def _show_assistant_error(self, error: str) -> None:
         self._append_chat("Fehler", error)
         self.ai_mode_label.configure(text="Fehler")
-        self.header_ai_status.configure(text="KI · Fehler", text_color=self.RED)
-        self.send_button.configure(state="normal", text="Senden")
+        self.header_ai_status.configure(text="✕ KI-FEHLER", text_color=self.RED)
+        self.engineering_status.grid_remove()
+        self.send_button.configure(state="normal", text="↑")
         self.assistant_entry.focus_set()
 
     def _reset_assistant(self) -> None:
         self.assistant.reset()
         self.chat.configure(state="normal")
         self.chat.delete("1.0", "end")
-        self.chat.insert("end", "Assistent:\nNeuer Entwurfsdialog gestartet.\n\n")
+        self.chat.insert("end", "✦ KI\nNeuer Entwurfsdialog gestartet.\n\n", "ai_message")
         self.chat.configure(state="disabled")
         self._set_text(self.ai_result, "")
         self._set_text(self.ai_interpretation, "")
         self.recognized_values.configure(text="Noch keine Vorgaben erkannt.")
+        self.technical_classification.configure(text="Noch keine technischen Werte.")
+        self.technical_explanation.configure(text="–")
+        self.technical_source.configure(text="Quelle: –")
+        self.current_design_summary.configure(text="Noch kein berechneter Entwurf.")
         self._clear_status_block()
         self.ai_visualizer.clear()
         self.ai_mode_label.configure(text="Bereit")
-        self.header_ai_status.configure(text="KI · bereit", text_color=self.MUTED)
+        self.header_ai_status.configure(text="○ KI BEREIT", text_color=self.MUTED)
+
+    def _update_technical_classification(self, reply: AssistantReply) -> None:
+        state = self.assistant.state
+        result_input = reply.result.input if reply.result else None
+        values = dict(state.parameters)
+        if result_input is not None:
+            values.update({
+                "service_class": result_input.service_class,
+                "load_duration_class": result_input.load_duration_class,
+                "number_of_plates_ns": result_input.number_of_plates_ns,
+                "plate_thickness_ts_mm": result_input.plate_thickness_ts_mm,
+                "side_thickness_t1_mm": result_input.side_thickness_t1_mm,
+                "middle_thickness_t2_mm": result_input.middle_thickness_t2_mm,
+                "dowel_diameter_d_mm": result_input.dowel_diameter_d_mm,
+                "rows_parallel_n": result_input.rows_parallel_n,
+                "rows_perpendicular_m": result_input.rows_perpendicular_m,
+            })
+        provenance_labels = {
+            "USER_FIXED": "Benutzervorgabe",
+            "KNOWLEDGE_DERIVED": "KI-Einordnung",
+            "DERIVED": "abgeleitet",
+            "OPTIMIZED": "optimiert",
+        }
+
+        def origin(key: str, default: str = "DERIVED") -> str:
+            code = state.parameter_provenance.get(key, default)
+            return provenance_labels.get(code, code)
+
+        rows: list[str] = []
+        if "service_class" in values:
+            rows.append(f"Nutzungsklasse: {values['service_class']}  ·  {origin('service_class')}")
+        if "load_duration_class" in values:
+            rows.append(
+                f"Lasteinwirkungsdauer: {values['load_duration_class']}  ·  "
+                f"{origin('load_duration_class')}"
+            )
+        if result_input is not None:
+            rows.append(f"kmod: {result_input.k_mod:g}  ·  abgeleitet")
+            rows.append(f"Anschlussaufbau: {result_input.connection_case}  ·  {origin('number_of_plates_ns', 'OPTIMIZED')}")
+        if "number_of_plates_ns" in values:
+            rows.append(f"Blechanzahl: {values['number_of_plates_ns']}  ·  {origin('number_of_plates_ns', 'OPTIMIZED')}")
+        for key, label in (
+            ("plate_thickness_ts_mm", "Blechdicke ts"),
+            ("side_thickness_t1_mm", "Seitenholz t1"),
+            ("middle_thickness_t2_mm", "Mittelholz t2"),
+            ("dowel_diameter_d_mm", "Durchmesser"),
+        ):
+            if key in values:
+                rows.append(f"{label}: {float(values[key]):g} mm  ·  {origin(key, 'OPTIMIZED')}")
+        if {"rows_parallel_n", "rows_perpendicular_m"} <= values.keys():
+            n, m = int(values["rows_parallel_n"]), int(values["rows_perpendicular_m"])
+            rows.append(f"Anordnung: {n} × {m} = {n*m}  ·  {origin('rows_parallel_n', 'OPTIMIZED')}")
+        self.technical_classification.configure(
+            text="\n".join(rows) if rows else "Noch keine technischen Werte."
+        )
+        explanation = state.current_explanation or reply.interpretation or "–"
+        self.technical_explanation.configure(text=explanation)
+        sources = list(dict.fromkeys(state.parameter_sources.values()))
+        if result_input is not None:
+            sources.append(KMOD_SOURCE)
+            self.current_design_summary.configure(
+                text=(
+                    f"{result_input.force_ed_kn:g} kN     {result_input.timber_grade}     "
+                    f"{result_input.width_b_mm:g} × {result_input.height_h_mm:g} mm     "
+                    f"NK{result_input.service_class} · {result_input.load_duration_class} · "
+                    f"kmod {result_input.k_mod:g}\n"
+                    f"{result_input.number_of_plates_ns} Bleche · {result_input.plate_thickness_ts_mm:g} mm     "
+                    f"t1 {result_input.side_thickness_t1_mm:g} · t2 {result_input.middle_thickness_t2_mm:g} mm     "
+                    f"Ø{result_input.dowel_diameter_d_mm:g}     "
+                    f"{result_input.rows_parallel_n} × {result_input.rows_perpendicular_m}"
+                )
+            )
+        self.technical_source.configure(
+            text="Quelle: " + ("; ".join(sources) if sources else "–")
+        )
 
     def _update_status_block(self, result: StabduebelResult) -> None:
         validation = validate_oenorm(result.input, result)
@@ -759,12 +1114,20 @@ class StabduebelApp(ctk.CTk):
     def _append_chat(self, sender: str, text: str) -> None:
         at_bottom = self.chat.yview()[1] >= 0.98
         self.chat.configure(state="normal")
-        self.chat.insert("end", f"{sender}:\n{text}\n\n")
+        is_user = sender.lower() in {"sie", "du", "user"}
+        heading = "DU" if is_user else "✦ KI"
+        tag = "user_message" if is_user else "ai_message"
+        self.chat.insert("end", f"{heading}\n{text}\n\n", tag)
         self.chat.configure(state="disabled")
         if at_bottom:
             self._scroll_chat_to_end()
         else:
             self.new_message_button.grid()
+
+    def _clear_chat_placeholder(self, _event=None) -> None:
+        if self.assistant_entry.get("1.0", "end-1c") == self._chat_placeholder:
+            self.assistant_entry.delete("1.0", "end")
+            self.assistant_entry.configure(text_color=self.TEXT)
 
     def _on_chat_enter(self, event) -> str:
         if event.state & 0x0001:
