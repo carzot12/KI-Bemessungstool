@@ -23,6 +23,7 @@ from infopol.materials import (
     get_kmod,
     normalize_load_duration,
 )
+from knowledge.sources import source_summary
 
 from .optimizer import (
     EvaluatedVariant,
@@ -197,6 +198,27 @@ class StabduebelAssistant:
     def _respond_technical(self, user_text: str) -> AssistantReply:
         if not user_text.strip():
             raise ValueError("Bitte eine Anforderung eingeben.")
+        if re.search(
+            r"\b(?:bemess|berechn|dimensionier)\w*\b.*\b(?:biegeträger|"
+            r"querkraftanschluss|schraubenanschluss|nagelverbindung|"
+            r"holzschrauben?|nägel?|dübel besonderer bauart)\b|"
+            r"\b(?:biegeträger|querkraftanschluss)\b.*\b(?:bemess|berechn)\w*",
+            user_text,
+            re.IGNORECASE,
+        ):
+            text = (
+                "Der aktuelle Prototyp ist ausschließlich für zugbeanspruchte "
+                "Stabdübel-Zuglaschenstöße mit den implementierten Holz-/"
+                "Stahlblech-Aufbauten freigegeben. Eine Bemessung dieses anderen "
+                "Bauteils oder Verbindungsmittels starte ich daher nicht. Eine "
+                "allgemeine fachliche Einordnung kann ich dir kurz geben."
+            )
+            self.conversation.last_intent = "GENERAL_ENGINEERING_QUESTION"
+            self.conversation.last_action = "GENERAL_TECHNICAL_QUESTION"
+            return AssistantReply(
+                text, self.state.last_result, False,
+                self._recognized_parameters(self.state.last_result), text,
+            )
         if re.search(
             r"\b(?:neue|neuen|neuer)\s+(?:bemessung|entwurf|verbindung)\b",
             user_text,
@@ -601,6 +623,13 @@ class StabduebelAssistant:
 
     def _handle_contextual_chat(self, user_text: str) -> AssistantReply | None:
         normalized = user_text.lower().strip()
+        if re.search(r"ihbv|beispielsammlung|tabellenwerk", normalized):
+            self.conversation.last_intent = "GENERAL_ENGINEERING_QUESTION"
+            self.conversation.last_action = "GENERAL_TECHNICAL_QUESTION"
+            text = self._answer_general_question(user_text)
+            return AssistantReply(
+                text, self.state.last_result, False, interpretation=text,
+            )
         if re.fullmatch(r"(?:ok(?:ay)?|alles klar|verstehe|passt|danke)[.!]?", normalized):
             self.conversation.last_intent = "CHAT"
             self.conversation.last_action = "CHAT"
@@ -1563,14 +1592,16 @@ class StabduebelAssistant:
                 "Die Nutzungsklasse beschreibt die Feuchtebedingungen der Verwendung. "
                 "Der Python-Code benötigt sie zusammen mit der Lasteinwirkungsdauer, "
                 f"um kmod deterministisch nach {KMOD_SOURCE} auszuwählen. Sie verändert "
-                "also nicht die Last, sondern den anzusetzenden Bemessungswert."
+                "also nicht die Last, sondern den anzusetzenden Bemessungswert. "
+                "Kontrollquelle: " + source_summary("nutzungsklasse") + "."
             )
         if re.search(r"lasteinwirkungsdauer", normalized):
             return (
                 "Die Klasse der Lasteinwirkungsdauer ordnet ein, wie lange eine "
                 "Einwirkung typischerweise wirkt. Im implementierten Normmodell stehen "
                 "ständig, lang, mittel, kurz und sehr kurz zur Verfügung. Zusammen mit "
-                f"der Nutzungsklasse bestimmt sie kmod nach {KMOD_SOURCE}."
+                f"der Nutzungsklasse bestimmt sie kmod nach {KMOD_SOURCE}. "
+                "Kontrollquelle: " + source_summary("kled") + "."
             )
         if re.search(r"vier.*scherfug|scherfug.*notwendig", normalized):
             return (
@@ -1609,7 +1640,8 @@ class StabduebelAssistant:
                 return (
                     "kmod wird deterministisch aus Holzprodukt, Nutzungsklasse und "
                     f"Lasteinwirkungsdauer nach {KMOD_SOURCE} bestimmt. Für den aktuellen "
-                    "Dialog liegt noch kein vollständiges Rechenergebnis vor."
+                    "Dialog liegt noch kein vollständiges Rechenergebnis vor. "
+                    "Kontrollquelle: " + source_summary("kmod") + "."
                 )
             data = result.input
             return (
@@ -1617,7 +1649,59 @@ class StabduebelAssistant:
                 f"aus Holzklasse {data.timber_grade}, Nutzungsklasse "
                 f"{data.service_class} und Lasteinwirkungsdauer "
                 f"„{data.load_duration_class}“ nach {KMOD_SOURCE}; das LLM setzt "
-                "diesen Wert nicht selbst."
+                "diesen Wert nicht selbst. Kontrollquelle: "
+                + source_summary("kmod") + "."
+            )
+        if re.search(r"lochleibungsfestigkeit|\bfh", normalized):
+            return (
+                "Die Lochleibungsfestigkeit beschreibt den lokalen Widerstand des "
+                "Holzes gegen die Pressung des Stabdübels. Den konkreten Wert "
+                "berechnet ausschließlich der Python-Rechenkern aus den aktuellen "
+                "Eingabedaten. Kontrollquelle: "
+                + source_summary("lochleibungsfestigkeit") + "."
+            )
+        if re.search(r"fließmoment|\bmy", normalized):
+            return (
+                "Das charakteristische Fließmoment beschreibt den Biegewiderstand "
+                "des Stabdübels und geht in die Johansen-Versagensmodi ein. Der "
+                "Zahlenwert kommt ausschließlich aus dem Rechenkern. Kontrollquelle: "
+                + source_summary("fließmoment") + "."
+            )
+        if re.search(r"johansen|versagensform|versagensmodus", normalized):
+            result = self.state.last_result
+            current = ""
+            if result is not None:
+                timber = result.timber_fastener
+                if result.input.number_of_plates_ns == 1:
+                    modes = {key: timber[key] for key in ("mode_f_n", "mode_g_n", "mode_h_n")}
+                    governing = min(modes, key=modes.get).replace("mode_", "").replace("_n", "")
+                    current = f" Im aktuellen Ergebnis ist Modus {governing} maßgebend."
+                else:
+                    groups = (
+                        ("I/IV", ("mode_f_i_n", "mode_g_i_n", "mode_h_i_n")),
+                        ("II", ("mode_l_ii_n", "mode_m_ii_n")),
+                        ("III", ("mode_f_iii_n", "mode_h_iii_n")),
+                    )
+                    labels = []
+                    for plane, keys in groups:
+                        key = min(keys, key=lambda item: timber[item])
+                        mode = key.split("_")[1]
+                        labels.append(f"{mode} in Scherfuge {plane}")
+                    current = " Im aktuellen Ergebnis sind " + ", ".join(labels) + " maßgebend."
+            return (
+                "Die Johansen-Theorie vergleicht mögliche Lochleibungs- und "
+                "Fließgelenkmechanismen; maßgebend ist der kleinste berechnete "
+                "Widerstand." + current + " Kontrollquelle für den unterstützten "
+                "Stahlblechfall: " + source_summary("stahlblech") + "."
+            )
+        if re.search(r"ihbv|beispielsammlung|zuglaschenstoß.*beispiel", normalized):
+            return (
+                "Ja. Die IHBV-Beispielsammlung 2022 behandelt in Abschnitt "
+                "IV.2.1.1 auf den Seiten IV.5-IV.7 einen Stabdübel-Zuglaschenstoß. "
+                "Dort handelt es sich jedoch um eine zweischnittige Holz-Holz-"
+                "Verbindung mit außenliegenden Holzlaschen, nicht um den hier "
+                "implementierten Aufbau mit innenliegenden Stahlblechen. Das Beispiel "
+                "dient deshalb nur als Kontrollquelle für gemeinsame Rechengrößen."
             )
         if re.search(r"n[_\s-]?eff", user_text, re.IGNORECASE):
             result = self.state.last_result
@@ -1631,7 +1715,7 @@ class StabduebelAssistant:
                 "n_eff ist die wirksame Anzahl der hintereinander in Faserrichtung "
                 "angeordneten Verbindungsmittel. Der Rechenkern berücksichtigt damit, "
                 "dass mehrere Stabdübel einer Reihe nicht immer gleichmäßig tragen."
-                + suffix
+                + suffix + " Kontrollquelle: " + source_summary("n_eff") + "."
             )
         return (
             "Diese allgemeine Fachfrage kann ich im V1 noch nicht belastbar aus der "

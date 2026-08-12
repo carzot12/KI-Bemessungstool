@@ -25,6 +25,7 @@ from infopol.materials import (
     get_connection_gamma_m,
     get_kmod,
 )
+from ui import ConnectionVisualizer
 
 
 ctk.set_appearance_mode("light")
@@ -132,9 +133,15 @@ class StabduebelApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.withdraw()
-        self.title("KI-gestützte Stabdübelbemessung – V1")
-        self.geometry("1240x820")
-        self.minsize(1040, 700)
+        self.title("KI-Bemessungstool")
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        width = int(screen_width * 0.92)
+        height = int(screen_height * 0.90)
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(min(1120, screen_width), min(720, screen_height))
         self.configure(fg_color=self.BG)
 
         self.materials = TimberMaterialRepository()
@@ -168,16 +175,32 @@ class StabduebelApp(ctk.CTk):
         heading.pack(side="left", fill="y")
         ctk.CTkLabel(
             heading,
-            text="KI-gestützte Stabdübelbemessung",
+            text="KI-Bemessungstool",
             font=ctk.CTkFont(size=25, weight="bold"),
             text_color=self.TEXT,
         ).pack(anchor="w", pady=(18, 2))
         ctk.CTkLabel(
             heading,
-            text="V1-Prototyp · KI für Sprache, Python für sämtliche Nachweise",
+            text="KI-gestützte Bemessung von Holzbauverbindungen",
             font=ctk.CTkFont(size=13),
             text_color=self.MUTED,
         ).pack(anchor="w")
+
+        status = ctk.CTkFrame(header, fg_color="transparent")
+        status.pack(side="right", padx=28)
+        ctk.CTkLabel(
+            status, text="NORMMODUS", text_color=self.MUTED,
+            font=ctk.CTkFont(size=10, weight="bold"),
+        ).pack(anchor="e")
+        ctk.CTkLabel(
+            status, text="ÖNORM", text_color=self.RED,
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(anchor="e")
+        self.header_ai_status = ctk.CTkLabel(
+            status, text="KI · bereit", text_color=self.MUTED,
+            font=ctk.CTkFont(size=11),
+        )
+        self.header_ai_status.pack(anchor="e", pady=(4, 0))
 
     def _build_tabs(self) -> None:
         self.tabs = ctk.CTkTabview(
@@ -193,12 +216,13 @@ class StabduebelApp(ctk.CTk):
         self._build_manual_tab(manual_tab)
 
     def _build_assistant_tab(self, tab: ctk.CTkFrame) -> None:
-        tab.grid_columnconfigure(0, weight=3)
-        tab.grid_columnconfigure(1, weight=2)
-        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=6, minsize=500)
+        tab.grid_columnconfigure(1, weight=5, minsize=430)
+        tab.grid_rowconfigure(0, weight=5)
+        tab.grid_rowconfigure(1, weight=6)
 
         chat_card = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
-        chat_card.grid(row=0, column=0, sticky="nsew", padx=(8, 10), pady=10)
+        chat_card.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(8, 10), pady=10)
         chat_card.grid_columnconfigure(0, weight=1)
         chat_card.grid_rowconfigure(1, weight=1)
 
@@ -212,7 +236,7 @@ class StabduebelApp(ctk.CTk):
         self.chat = ctk.CTkTextbox(
             chat_card,
             wrap="word",
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=14),
             fg_color="#F8F9FA",
             border_width=1,
             border_color=self.BORDER,
@@ -231,7 +255,7 @@ class StabduebelApp(ctk.CTk):
         input_row.grid_columnconfigure(0, weight=1)
         self.assistant_entry = ctk.CTkEntry(
             input_row,
-            height=42,
+            height=52,
             placeholder_text="Anforderung oder Folgeprompt eingeben …",
             border_color=self.BORDER,
         )
@@ -241,15 +265,20 @@ class StabduebelApp(ctk.CTk):
             input_row,
             text="Senden",
             width=100,
-            height=42,
+            height=52,
             fg_color=self.RED,
             hover_color=self.RED_DARK,
             command=self._send_to_assistant,
         )
         self.send_button.grid(row=0, column=1)
 
+        self.ai_visualizer = ConnectionVisualizer(tab)
+        self.ai_visualizer.grid(
+            row=0, column=1, sticky="nsew", padx=(10, 8), pady=(10, 5)
+        )
+
         result_card = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
-        result_card.grid(row=0, column=1, sticky="nsew", padx=(10, 8), pady=10)
+        result_card.grid(row=1, column=1, sticky="nsew", padx=(10, 8), pady=(5, 10))
         result_card.grid_columnconfigure(0, weight=1)
         result_card.grid_rowconfigure(6, weight=1)
         ctk.CTkLabel(
@@ -298,6 +327,13 @@ class StabduebelApp(ctk.CTk):
             text_color=self.MUTED,
         )
         self.ai_status_title.grid(row=0, column=0, sticky="w", padx=16, pady=(13, 3))
+        self.ai_eta_label = ctk.CTkLabel(
+            self.ai_status_frame,
+            text="η = –",
+            font=ctk.CTkFont(size=28, weight="bold"),
+            text_color=self.MUTED,
+        )
+        self.ai_eta_label.grid(row=1, column=0, sticky="w", padx=16)
         self.ai_status_details = ctk.CTkLabel(
             self.ai_status_frame,
             text="",
@@ -306,14 +342,14 @@ class StabduebelApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color=self.TEXT,
         )
-        self.ai_status_details.grid(row=1, column=0, sticky="ew", padx=16)
+        self.ai_status_details.grid(row=2, column=0, sticky="ew", padx=16)
         self.ai_utilization_bar = ctk.CTkProgressBar(
             self.ai_status_frame,
             height=12,
             progress_color=self.MUTED,
             fg_color="#D8DDE3",
         )
-        self.ai_utilization_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(9, 14))
+        self.ai_utilization_bar.grid(row=3, column=0, sticky="ew", padx=16, pady=(9, 14))
         self.ai_utilization_bar.set(0)
 
         ctk.CTkLabel(
@@ -350,6 +386,24 @@ class StabduebelApp(ctk.CTk):
         )
         self.ai_interpretation.grid(row=8, column=0, sticky="ew", padx=20, pady=(0, 10))
         self.ai_interpretation.configure(state="disabled")
+        actions = ctk.CTkFrame(result_card, fg_color="transparent")
+        actions.grid(row=9, column=0, sticky="ew", padx=20, pady=(0, 8))
+        for column in range(3):
+            actions.grid_columnconfigure(column, weight=1)
+        ctk.CTkButton(
+            actions, text="Alle Nachweise", height=32,
+            fg_color="#E9ECEF", hover_color="#DDE1E5", text_color=self.TEXT,
+            command=lambda: self.ai_result.focus_set(),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ctk.CTkButton(
+            actions, text="Varianten", height=32,
+            fg_color="#E9ECEF", hover_color="#DDE1E5", text_color=self.TEXT,
+            command=lambda: self.assistant_entry.insert("end", "Zeig mir Varianten"),
+        ).grid(row=0, column=1, sticky="ew", padx=4)
+        ctk.CTkButton(
+            actions, text="Bericht exportieren", height=32, state="disabled",
+            fg_color="#E9ECEF", text_color=self.MUTED,
+        ).grid(row=0, column=2, sticky="ew", padx=(4, 0))
         ctk.CTkButton(
             result_card,
             text="Dialog zurücksetzen",
@@ -357,7 +411,7 @@ class StabduebelApp(ctk.CTk):
             hover_color="#DDE1E5",
             text_color=self.TEXT,
             command=self._reset_assistant,
-        ).grid(row=9, column=0, sticky="ew", padx=20, pady=(0, 18))
+        ).grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 18))
 
     def _build_manual_tab(self, tab: ctk.CTkFrame) -> None:
         tab.grid_columnconfigure(0, weight=2)
@@ -403,8 +457,17 @@ class StabduebelApp(ctk.CTk):
             command=self._load_manual_defaults,
         ).grid(row=button_row + 1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 16))
 
-        result = ctk.CTkFrame(tab, fg_color=self.CARD, corner_radius=14)
-        result.grid(row=0, column=1, sticky="nsew", padx=(10, 8), pady=10)
+        manual_right = ctk.CTkFrame(tab, fg_color="transparent")
+        manual_right.grid(row=0, column=1, sticky="nsew", padx=(10, 8), pady=10)
+        manual_right.grid_columnconfigure(0, weight=1)
+        manual_right.grid_rowconfigure(0, weight=4)
+        manual_right.grid_rowconfigure(1, weight=5)
+
+        self.manual_visualizer = ConnectionVisualizer(manual_right)
+        self.manual_visualizer.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
+
+        result = ctk.CTkFrame(manual_right, fg_color=self.CARD, corner_radius=14)
+        result.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
         result.grid_columnconfigure(0, weight=1)
         result.grid_rowconfigure(3, weight=1)
         ctk.CTkLabel(
@@ -434,6 +497,13 @@ class StabduebelApp(ctk.CTk):
         self.manual_status_title.grid(
             row=0, column=0, sticky="w", padx=18, pady=(16, 5)
         )
+        self.manual_eta_label = ctk.CTkLabel(
+            self.manual_status_frame,
+            text="η = –",
+            font=ctk.CTkFont(size=30, weight="bold"),
+            text_color=self.MUTED,
+        )
+        self.manual_eta_label.grid(row=1, column=0, sticky="w", padx=18)
         self.manual_status_details = ctk.CTkLabel(
             self.manual_status_frame,
             text="Nach der Berechnung erscheint hier die Zusammenfassung.",
@@ -443,7 +513,7 @@ class StabduebelApp(ctk.CTk):
             text_color=self.MUTED,
         )
         self.manual_status_details.grid(
-            row=1, column=0, sticky="ew", padx=18
+            row=2, column=0, sticky="ew", padx=18
         )
         self.manual_utilization_bar = ctk.CTkProgressBar(
             self.manual_status_frame,
@@ -452,7 +522,7 @@ class StabduebelApp(ctk.CTk):
             fg_color="#D8DDE3",
         )
         self.manual_utilization_bar.grid(
-            row=2, column=0, sticky="ew", padx=18, pady=(11, 17)
+            row=3, column=0, sticky="ew", padx=18, pady=(11, 17)
         )
         self.manual_utilization_bar.set(0)
 
@@ -534,6 +604,7 @@ class StabduebelApp(ctk.CTk):
         self._append_chat("Sie", text)
         self.send_button.configure(state="disabled", text="Berechnet …")
         self.ai_mode_label.configure(text="Anfrage wird verarbeitet …")
+        self.header_ai_status.configure(text="KI · verarbeitet …", text_color=self.RED)
         threading.Thread(target=self._assistant_worker, args=(text,), daemon=True).start()
 
     def _assistant_worker(self, text: str) -> None:
@@ -549,6 +620,10 @@ class StabduebelApp(ctk.CTk):
             "KI-Sprachmodell nicht verfügbar – eingeschränkter lokaler Modus"
         )
         self.ai_mode_label.configure(text=mode)
+        self.header_ai_status.configure(
+            text="KI · online" if reply.used_llm else "KI · lokaler Modus",
+            text_color=self.GREEN if reply.used_llm else self.MUTED,
+        )
         self.recognized_values.configure(
             text=reply.recognized_parameters or "Noch keine Vorgaben erkannt."
         )
@@ -556,6 +631,7 @@ class StabduebelApp(ctk.CTk):
         if reply.result:
             self._set_text(self.ai_result, self._detailed_result(reply.result))
             self._update_status_block(reply.result)
+            self.ai_visualizer.update_input(reply.result.input, reply.result)
         else:
             self._clear_status_block()
         self.send_button.configure(state="normal", text="Senden")
@@ -563,6 +639,7 @@ class StabduebelApp(ctk.CTk):
     def _show_assistant_error(self, error: str) -> None:
         self._append_chat("Fehler", error)
         self.ai_mode_label.configure(text="Fehler")
+        self.header_ai_status.configure(text="KI · Fehler", text_color=self.RED)
         self.send_button.configure(state="normal", text="Senden")
 
     def _reset_assistant(self) -> None:
@@ -575,7 +652,9 @@ class StabduebelApp(ctk.CTk):
         self._set_text(self.ai_interpretation, "")
         self.recognized_values.configure(text="Noch keine Vorgaben erkannt.")
         self._clear_status_block()
+        self.ai_visualizer.clear()
         self.ai_mode_label.configure(text="Bereit")
+        self.header_ai_status.configure(text="KI · bereit", text_color=self.MUTED)
 
     def _update_status_block(self, result: StabduebelResult) -> None:
         validation = validate_oenorm(result.input, result)
@@ -590,6 +669,7 @@ class StabduebelApp(ctk.CTk):
             text="✓ NACHWEIS ERFÜLLT" if passed else "✕ NACHWEIS NICHT ERFÜLLT",
             text_color=color,
         )
+        self.ai_eta_label.configure(text=f"η = {utilization:.0%}", text_color=color)
         self.ai_status_details.configure(
             text=(
                 f"Maximale Ausnutzung: {utilization:.0%}\n"
@@ -624,6 +704,7 @@ class StabduebelApp(ctk.CTk):
     def _clear_status_block(self) -> None:
         self.ai_status_frame.configure(fg_color="#EEF1F4", border_color=self.BORDER)
         self.ai_status_title.configure(text="NOCH KEIN NACHWEIS", text_color=self.MUTED)
+        self.ai_eta_label.configure(text="η = –", text_color=self.MUTED)
         self.ai_status_details.configure(text="")
         self.ai_utilization_bar.configure(progress_color=self.MUTED)
         self.ai_utilization_bar.set(0)
@@ -669,6 +750,7 @@ class StabduebelApp(ctk.CTk):
             result = calculate_stabduebel(StabduebelInput(**values))
             self._update_manual_status_block(result)
             self._set_text(self.manual_result, self._detailed_result(result))
+            self.manual_visualizer.update_input(result.input, result)
         except (ValueError, KeyError) as exc:
             messagebox.showerror("Ungültige Eingabe", str(exc))
         except Exception as exc:
@@ -691,6 +773,7 @@ class StabduebelApp(ctk.CTk):
             text="✓ NACHWEIS ERFÜLLT" if passed else "✕ NACHWEIS NICHT ERFÜLLT",
             text_color=color,
         )
+        self.manual_eta_label.configure(text=f"η = {utilization:.0%}", text_color=color)
         self.manual_status_details.configure(
             text=(
                 f"Maximale Ausnutzung: {utilization:.0%}\n"
