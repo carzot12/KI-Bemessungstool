@@ -11,7 +11,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 from PIL import Image
 
-from ai.assistant import AssistantReply, StabduebelAssistant
+from ai.assistant import AssistantReply, MODEL, StabduebelAssistant
 from calculations.stabduebel import (
     StabduebelInput,
     StabduebelResult,
@@ -154,6 +154,8 @@ class StabduebelApp(ctk.CTk):
         self.manual_load_duration = tk.StringVar(value="mittel")
         self.manual_kmod_text = tk.StringVar(value="automatisch: 0,80")
         self.workspace_mode = tk.StringVar(value="✦ KI Workspace")
+        self.auto_scroll = True
+        self.is_user_near_bottom = True
 
         self._build_header()
         self._build_tabs()
@@ -351,6 +353,10 @@ class StabduebelApp(ctk.CTk):
         self.chat.bind("<B1-Motion>", self._chat_selection_autoscroll, add="+")
         self.chat.bind("<Command-c>", self._copy_chat_selection)
         self.chat.bind("<Control-c>", self._copy_chat_selection)
+        chat_text = self.chat._textbox  # type: ignore[attr-defined]
+        chat_text.bind("<MouseWheel>", self._on_chat_scroll, add="+")
+        chat_text.bind("<Button-4>", self._on_chat_scroll, add="+")
+        chat_text.bind("<Button-5>", self._on_chat_scroll, add="+")
 
         self.new_message_button = ctk.CTkButton(
             chat_card, text="↓ Neue Nachricht", width=145, height=28,
@@ -899,7 +905,10 @@ class StabduebelApp(ctk.CTk):
             return
         self.assistant_entry.delete("1.0", "end")
         self.assistant_entry.focus_set()
+        self.auto_scroll = True
+        self.is_user_near_bottom = True
         self._append_chat("Sie", text)
+        self._scroll_chat_to_end()
         self.send_button.configure(state="disabled", text="…")
         self.engineering_status.configure(
             text=(
@@ -922,13 +931,18 @@ class StabduebelApp(ctk.CTk):
 
     def _show_assistant_reply(self, reply: AssistantReply) -> None:
         self._append_chat("Assistent", reply.text)
-        mode = "OpenAI LLM + deterministischer Rechenkern" if reply.used_llm else (
-            "KI-Sprachmodell nicht verfügbar – eingeschränkter lokaler Modus"
-        )
+        if reply.used_llm:
+            mode = f"OpenAI LLM-first Agent · {MODEL} · deterministischer Rechenkern"
+        elif self.assistant.llm_status == "ERROR":
+            mode = "LLM-Aufruf fehlgeschlagen – kein stiller Fallback"
+        else:
+            mode = "Lokaler Modus – freie KI-Unterhaltung eingeschränkt"
         self.ai_mode_label.configure(text=mode)
         self.header_ai_status.configure(
-            text="● KI ONLINE" if reply.used_llm else "○ LOKALER MODUS",
-            text_color=self.GREEN if reply.used_llm else self.MUTED,
+            text=(f"● KI ONLINE · {MODEL}" if reply.used_llm else
+                  "✕ LLM-FEHLER" if self.assistant.llm_status == "ERROR" else
+                  "○ LOKALER MODUS"),
+            text_color=self.GREEN if reply.used_llm else self.RED if self.assistant.llm_status == "ERROR" else self.MUTED,
         )
         self.recognized_values.configure(
             text=reply.recognized_parameters or "Noch keine Vorgaben erkannt."
@@ -1112,14 +1126,14 @@ class StabduebelApp(ctk.CTk):
         self.ai_utilization_bar.set(0)
 
     def _append_chat(self, sender: str, text: str) -> None:
-        at_bottom = self.chat.yview()[1] >= 0.98
+        should_scroll = self.auto_scroll or sender.lower() in {"sie", "du", "user"}
         self.chat.configure(state="normal")
         is_user = sender.lower() in {"sie", "du", "user"}
         heading = "DU" if is_user else "✦ KI"
         tag = "user_message" if is_user else "ai_message"
         self.chat.insert("end", f"{heading}\n{text}\n\n", tag)
         self.chat.configure(state="disabled")
-        if at_bottom:
+        if should_scroll:
             self._scroll_chat_to_end()
         else:
             self.new_message_button.grid()
@@ -1141,7 +1155,21 @@ class StabduebelApp(ctk.CTk):
 
     def _scroll_chat_to_end(self) -> None:
         self.chat.see("end")
+        self.auto_scroll = True
+        self.is_user_near_bottom = True
         self.new_message_button.grid_remove()
+
+    def _on_chat_scroll(self, _event=None) -> None:
+        self.after_idle(self._update_chat_scroll_state)
+
+    def _update_chat_scroll_state(self) -> None:
+        _first, last = self.chat.yview()
+        # Tk exposes fractions rather than pixels. Two percent is roughly the
+        # requested 50–100 px in the normal workspace height.
+        self.is_user_near_bottom = last >= 0.98
+        self.auto_scroll = self.is_user_near_bottom
+        if self.is_user_near_bottom:
+            self.new_message_button.grid_remove()
 
     def _chat_selection_autoscroll(self, event) -> None:
         margin = 18

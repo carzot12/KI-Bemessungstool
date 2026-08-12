@@ -37,7 +37,7 @@ from .optimizer import (
 
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "stabduebel_system.txt"
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 TWO_SHEAR_ONE_INTERNAL_PLATE = "TWO_SHEAR_ONE_INTERNAL_PLATE"
 MULTI_SHEAR_TWO_INTERNAL_PLATES = "MULTI_SHEAR_TWO_INTERNAL_PLATES"
 GEOMETRY_OPTIMIZATION_VERIFIED = True
@@ -215,10 +215,16 @@ class StabduebelAssistant:
         self._undo_state: ConversationState | None = None
         self._comparison_results: list[StabduebelResult] = []
         self.conversation = DialogueMemory()
+        self._api_key, self.llm_key_source = self._resolve_api_key()
+        self.message_history: list[dict[str, str]] = []
+        self.llm_status = "UNTESTED" if self._api_key else "LOCAL"
+        self.llm_error: str | None = None
+        self._llm_client: Any = None
+        self._agent: Any = None
+        self._force_local = False
         self.debug_enabled = os.getenv("STABDUEBEL_DEBUG", "").lower() in {
             "1", "true", "yes",
         }
-        self._api_key, self.llm_key_source = self._resolve_api_key()
 
     @staticmethod
     def _resolve_api_key() -> tuple[str | None, str]:
@@ -246,19 +252,143 @@ class StabduebelAssistant:
     def llm_available(self) -> bool:
         return bool(self._api_key)
 
+    @property
+    def llm_online(self) -> bool:
+        return self.llm_status == "ONLINE"
+
     def reset(self) -> None:
         self.state = ConversationState()
         self._undo_state = None
         self._comparison_results = []
         self.conversation = DialogueMemory()
+        self.message_history = []
 
     def respond(self, user_text: str) -> AssistantReply:
+        if self._api_key and not self._force_local:
+            if not self._ensure_llm_online():
+                return AssistantReply(
+                    f"LLM-Aufruf fehlgeschlagen. {self.llm_error}",
+                    self.state.last_result,
+                    False,
+                    self._recognized_parameters(self.state.last_result),
+                    self.llm_error or "",
+                )
+            return self._agent.respond(user_text)
+        return self._respond_legacy(user_text)
+
+    def _respond_legacy(self, user_text: str) -> AssistantReply:
         self.conversation.last_user_message = user_text
         contextual = self._handle_contextual_chat(user_text)
         if contextual is not None:
             return self._record_reply(contextual)
         reply = self._respond_technical(user_text)
         return self._record_reply(reply)
+
+    def _ensure_llm_online(self) -> bool:
+        if self.llm_status == "ONLINE":
+            return True
+        if not self._api_key:
+            self.llm_status = "LOCAL"
+            return False
+        try:
+            from openai import OpenAI
+            from .agent import LLMAgent
+            self._llm_client = OpenAI(api_key=self._api_key)
+            self._llm_client.models.retrieve(MODEL)
+            self._agent = LLMAgent(self, self._llm_client, MODEL)
+            self.llm_status = "ONLINE"
+            self.llm_error = None
+            return True
+        except Exception as exc:
+            request_id = getattr(exc, "request_id", None)
+            self.llm_status = "ERROR"
+            self.llm_error = (
+                f"{type(exc).__name__}: {exc} (Modell {MODEL}, "
+                f"Request-ID {request_id or 'nicht verfügbar'})"
+            )
+            return False
+
+    def copy_state(self) -> ConversationState:
+        return deepcopy(self.state)
+
+    def empty_parameter_update(self) -> dict[str, Any]:
+        forced = self._force_local
+        self._force_local = True
+        try:
+            return self._fallback_extract("")
+        finally:
+            self._force_local = forced
+
+    def execute_local_command(self, command: str) -> AssistantReply:
+        forced = self._force_local
+        self._force_local = True
+        try:
+            return self._respond_technical(command)
+        finally:
+            self._force_local = forced
+
+    def compact_variants(self, limit: int = 12) -> list[dict[str, Any]]:
+        optimization = self.state.last_optimization
+        if optimization is None:
+            return []
+        variants = sorted(
+            optimization.evaluated,
+            key=lambda item: (
+                not (item.validation.admissible and item.result.passed),
+                item.fastener_count,
+                item.result.governing_check.utilization,
+            ),
+        )[:limit]
+        return [
+            {
+                "id": index,
+                "diameter_mm": item.input.dowel_diameter_d_mm,
+                "rows_parallel_n": item.input.rows_parallel_n,
+                "rows_perpendicular_m": item.input.rows_perpendicular_m,
+                "fastener_count": item.fastener_count,
+                "utilization": item.result.governing_check.utilization,
+                "governing_check": item.result.governing_check.name,
+                "passed": item.result.passed,
+                "norm_admissible": item.validation.admissible,
+            }
+            for index, item in enumerate(variants, start=1)
+        ]
+
+    def agent_context(self) -> dict[str, Any]:
+        current = self.state.last_result
+        previous = self.conversation.previous_result
+        ai_derived = {
+            key: value for key, value in self.state.parameters.items()
+            if self.state.parameter_provenance.get(key) in {"AI_DERIVED", "KNOWLEDGE_DERIVED", "DERIVED", "OPTIMIZED"}
+        }
+        def result_summary(result: StabduebelResult | None) -> dict[str, Any] | None:
+            if result is None:
+                return None
+            return {
+                "input": asdict(result.input), "passed": result.passed,
+                "utilization": result.governing_check.utilization,
+                "governing_check": result.governing_check.name,
+            }
+        optimization = self.state.last_optimization
+        return {
+            "current_design": dict(self.state.parameters),
+            "current_result": result_summary(current),
+            "last_successful_result": result_summary(self.state.last_successful_result),
+            "previous_design": dict(self.state.previous_technical_state),
+            "previous_result": result_summary(previous),
+            "last_optimization": ({"evaluated_count": optimization.evaluated_count, "feasible_count": optimization.feasible_count, "message": optimization.message} if optimization else None),
+            "optimization_goal": self.state.optimization_goal,
+            "autonomy_mode": self.state.autonomy_mode,
+            "user_fixed_constraints": sorted(self.state.fixed_parameters),
+            "ai_derived_constraints": ai_derived,
+            "parameter_provenance": dict(self.state.parameter_provenance),
+            "missing_information": self._missing_required_parameters(),
+            "pending_clarification": self.state.pending_clarification,
+            "connection_type": self.state.connection_type,
+            "shear_planes": self.state.shear_planes_s,
+            "considered_variants": self.compact_variants(),
+            "knowledge_sources_used": dict(self.state.parameter_sources),
+        }
 
     def _respond_technical(self, user_text: str) -> AssistantReply:
         if not user_text.strip():
@@ -1136,7 +1266,7 @@ class StabduebelAssistant:
         )
 
     def _extract(self, text: str) -> tuple[dict[str, Any], bool]:
-        api_key = self._api_key
+        api_key = None if self._force_local else self._api_key
         if api_key:
             try:
                 from openai import OpenAI
