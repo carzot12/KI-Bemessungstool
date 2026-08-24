@@ -37,6 +37,11 @@ class ConnectionVisualizerData:
         return self.rows_parallel_n * self.rows_perpendicular_m
 
     @property
+    def displayed_fastener_count(self) -> int:
+        """Full splice: the calculated grid is shown on both joint sides."""
+        return 2 * self.fastener_count
+
+    @property
     def force_label(self) -> str:
         return f"FEd = {self.force_ed_kn:g} kN"
 
@@ -125,7 +130,7 @@ class ConnectionVisualizer(ctk.CTkFrame):
         ).pack(side="right")
 
         self.selector = ctk.CTkSegmentedButton(
-            self, values=["3D", "Seitenansicht", "Schnitt"],
+            self, values=["3D", "Seitenansicht", "Querschnitt"],
             variable=self._view, command=lambda _value: self.redraw(),
             selected_color=self.RED, selected_hover_color="#890923",
         )
@@ -195,53 +200,64 @@ class ConnectionVisualizer(ctk.CTkFrame):
         data = self._data
         assert data is not None
         c = self.canvas
-        width, height = max(c.winfo_width(), 420), max(c.winfo_height(), 260)
-        x0, x1 = width * 0.13, width * 0.84
-        y0, y1 = height * 0.25, height * 0.76
-        dx, dy = width * 0.09, -height * 0.12
-        c.create_polygon(
-            x0, y0, x1, y0, x1 + dx, y0 + dy, x0 + dx, y0 + dy,
-            fill="#F0D7B0", outline=self.WOOD_LINE, width=2,
-        )
-        c.create_polygon(
-            x1, y0, x1, y1, x1 + dx, y1 + dy, x1 + dx, y0 + dy,
-            fill="#D8B47E", outline=self.WOOD_LINE, width=2,
-        )
-        c.create_rectangle(x0, y0, x1, y1, fill=self.WOOD, outline=self.WOOD_LINE, width=2)
+        width, height = max(c.winfo_width(), 520), max(c.winfo_height(), 300)
+        left, seam, right = width * 0.08, width * 0.50, width * 0.86
+        top, bottom = height * 0.27, height * 0.78
+        depth_x, depth_y = width * 0.09, -height * 0.13
 
-        scale = (x1 - x0) / data.width_mm
-        if data.plate_count == 1:
-            centres = [x0 + data.side_thickness_mm * scale + data.plate_thickness_mm * scale / 2]
-        else:
-            first = x0 + data.side_thickness_mm * scale + data.plate_thickness_mm * scale / 2
-            centres = [first, first + (data.plate_thickness_mm + data.middle_thickness_mm) * scale]
-        plate_w = max(1.0, data.plate_thickness_mm * scale)
-        for centre in centres:
+        # Two separate timber members meet at the central end joint.
+        for x0, x1, fill in ((left, seam, self.WOOD), (seam, right, "#E9CCA2")):
+            c.create_rectangle(x0, top, x1, bottom, fill=fill,
+                               outline=self.WOOD_LINE, width=2)
             c.create_polygon(
-                centre - plate_w / 2, y0,
-                centre + plate_w / 2, y0,
-                centre + plate_w / 2 + dx, y0 + dy,
-                centre - plate_w / 2 + dx, y0 + dy,
-                fill=self.STEEL, outline="#3F4852",
+                x0, top, x1, top, x1 + depth_x, top + depth_y,
+                x0 + depth_x, top + depth_y,
+                fill="#F1D8B2", outline=self.WOOD_LINE, width=2,
             )
-            c.create_rectangle(
-                centre - plate_w / 2, y0, centre + plate_w / 2, y1,
-                fill=self.STEEL, outline="#3F4852",
+        c.create_line(seam, top, seam, bottom, fill="#704B2D", width=3)
+        c.create_line(seam + depth_x, top + depth_y, seam, top,
+                      fill="#704B2D", width=2)
+
+        # Slotted internal plates appear only as narrow planes on the opened
+        # top projection and bridge the joint; they are never external straps.
+        if data.plate_count == 1:
+            fractions = (0.5,)
+        else:
+            fractions = (
+                (data.side_thickness_mm + data.plate_thickness_mm / 2) / data.width_mm,
+                (data.side_thickness_mm + data.plate_thickness_mm
+                 + data.middle_thickness_mm + data.plate_thickness_mm / 2) / data.width_mm,
+            )
+        plate_span = (right - left) * 0.58
+        for fraction in fractions:
+            ox, oy = depth_x * fraction, depth_y * fraction
+            c.create_line(
+                seam - plate_span / 2 + ox, top + oy,
+                seam + plate_span / 2 + ox, top + oy,
+                fill=self.STEEL, width=max(2, int(data.plate_thickness_mm / 2)),
+            )
+            c.create_line(
+                seam - plate_span / 2 + ox, top + oy - 3,
+                seam + plate_span / 2 + ox, top + oy - 3,
+                fill="#3F4852", width=1, dash=(6, 4),
             )
 
-        xs = self._positions(x0 + (x1 - x0) * 0.22, x1 - (x1 - x0) * 0.22, data.rows_parallel_n)
-        ys = self._positions(y0 + (y1 - y0) * 0.2, y1 - (y1 - y0) * 0.2, data.rows_perpendicular_m)
-        radius = max(3.0, min(8.0, data.diameter_mm / 2.5))
+        left_xs, right_xs = self._splice_x_positions(
+            left, seam, right, data.rows_parallel_n
+        )
+        ys = self._positions(top + (bottom - top) * 0.23,
+                             bottom - (bottom - top) * 0.18,
+                             data.rows_perpendicular_m)
+        radius = max(3.0, min(9.0, data.diameter_mm * (bottom - top) / data.height_mm / 2))
         for y in ys:
-            for x in xs:
-                c.create_line(x - 4, y, x + dx * 0.55, y + dy * 0.55,
-                              fill=self.INK, width=2, dash=(5, 3))
+            for x in (*left_xs, *right_xs):
                 c.create_oval(x - radius, y - radius, x + radius, y + radius,
-                              fill="#F7F8FA", outline=self.INK, width=2)
+                              fill="#F8FAFC", outline=self.INK, width=2,
+                              tags=("dowel", "isometric_dowel"))
         c.create_text(
             width / 2, 18,
             text=(f"Innenliegende Schlitzbleche · {data.rows_parallel_n} × "
-                  f"{data.rows_perpendicular_m} = {data.fastener_count} Stabdübel"),
+                  f"{data.rows_perpendicular_m} = {data.fastener_count} je Stoßseite"),
             fill=self.INK, font=("Arial", 11, "bold"),
         )
         if self._show_dimensions.get():
@@ -257,49 +273,69 @@ class ConnectionVisualizer(ctk.CTkFrame):
         assert data is not None
         c = self.canvas
         width, height = max(c.winfo_width(), 400), max(c.winfo_height(), 240)
-        left, right = width * 0.09, width * 0.91
+        left, seam, right = width * 0.10, width * 0.50, width * 0.90
         top, bottom = height * 0.18, height * 0.78
-        c.create_rectangle(left, top, right, bottom, fill=self.WOOD, outline=self.WOOD_LINE, width=2)
+        c.create_rectangle(left, top, seam, bottom, fill=self.WOOD, outline=self.WOOD_LINE, width=2)
+        c.create_rectangle(seam, top, right, bottom, fill="#E9CCA2", outline=self.WOOD_LINE, width=2)
+        c.create_line(seam, top, seam, bottom, fill="#704B2D", width=3,
+                      tags=("joint",))
+        c.create_text(seam, top - 27, text="Stoßfuge", fill="#704B2D", font=("Arial", 9, "bold"))
+
+        # Hidden internal plate extent, deliberately subtle and dashed.
+        hidden_half = (right - left) * 0.28
+        for offset in range(data.plate_count):
+            inset = 6 + offset * 5
+            c.create_rectangle(
+                seam - hidden_half, top + inset, seam + hidden_half, bottom - inset,
+                outline="#87919C", dash=(7, 5), width=1,
+            )
 
         # Kraftpfeile zeigen den ausschließlich unterstützten Zugfall.
         mid_y = (top + bottom) / 2
         c.create_line(left, mid_y, 18, mid_y, arrow=tk.LAST, width=3, fill=self.RED)
         c.create_line(right, mid_y, width - 18, mid_y, arrow=tk.LAST, width=3, fill=self.RED)
         c.create_text(width / 2, 25, text=data.force_label, fill=self.INK, font=("Arial", 12, "bold"))
+        c.create_text(left - 8, mid_y - 16, text="FEd", fill=self.RED, font=("Arial", 9, "bold"))
+        c.create_text(right + 8, mid_y - 16, text="FEd", fill=self.RED, font=("Arial", 9, "bold"))
         c.create_line(left + 18, top + 16, right - 18, top + 16, arrow=tk.LAST,
                       fill=self.WOOD_LINE, width=2)
         c.create_text((left + right) / 2, top + 29, text="Faserrichtung",
                       fill=self.WOOD_LINE, font=("Arial", 9, "bold"))
 
-        x_margin = max(28.0, min(54.0, (right - left) * 0.15))
         y_margin = max(22.0, min(40.0, (bottom - top) * 0.22))
-        xs = self._positions(left + x_margin, right - x_margin, data.rows_parallel_n)
+        left_xs, right_xs = self._splice_x_positions(left, seam, right, data.rows_parallel_n)
         ys = self._positions(top + y_margin, bottom - y_margin, data.rows_perpendicular_m)
-        base = min((right - left) / max(data.rows_parallel_n + 2, 4), (bottom - top) / max(data.rows_perpendicular_m + 2, 4))
+        base = min((seam - left) / max(data.rows_parallel_n + 2, 4), (bottom - top) / max(data.rows_perpendicular_m + 2, 4))
         radius = max(4.0, min(12.0, base * 0.22 * data.diameter_mm / 12.0))
         for y in ys:
-            for x in xs:
-                c.create_oval(x - radius, y - radius, x + radius, y + radius, fill="#F7F8FA", outline=self.INK, width=2)
+            for x in (*left_xs, *right_xs):
+                c.create_oval(
+                    x - radius, y - radius, x + radius, y + radius,
+                    fill="#F7F8FA", outline=self.INK, width=2,
+                    tags=("dowel", "side_dowel"),
+                )
                 c.create_oval(x - 1.5, y - 1.5, x + 1.5, y + 1.5, fill=self.INK, outline="")
 
         c.create_text(
             width / 2, height - 43,
             text=(f"{data.rows_parallel_n} × {data.rows_perpendicular_m} = "
-                  f"{data.fastener_count} Stabdübel   ·   Ø{data.diameter_mm:g} mm"),
+                  f"{data.fastener_count} je Stoßseite · dargestellt {data.displayed_fastener_count}   ·   Ø{data.diameter_mm:g} mm"),
             fill=self.INK, font=("Arial", 11, "bold"),
         )
         if self._show_dimensions.get():
             dim_color = self.RED if data.invalid_dimensions else self.DIMENSION
-            if len(xs) >= 2:
-                self._dimension_line(c, xs[0], bottom + 13, xs[1], bottom + 13,
+            if len(left_xs) >= 2:
+                self._dimension_line(c, left_xs[0], bottom + 13, left_xs[1], bottom + 13,
                                      f"a1 = {data.a1_mm:g}", dim_color)
             if len(ys) >= 2:
-                self._dimension_line(c, right + 12, ys[0], right + 12, ys[1],
+                self._dimension_line(c, right + 13, ys[0], right + 13, ys[1],
                                      f"a2 = {data.a2_mm:g}", dim_color)
-            self._dimension_line(c, left, top - 13, xs[0], top - 13,
+            self._dimension_line(c, left_xs[-1], top - 13, seam, top - 13,
                                  f"a3,t = {data.a3_t_mm:g}", dim_color)
             self._dimension_line(c, left - 13, top, left - 13, ys[0],
                                  f"a4,c = {data.a4_c_mm:g}", dim_color)
+            self._dimension_line(c, right + 42, top, right + 42, bottom,
+                                 f"h = {data.height_mm:g} mm", dim_color)
             c.create_text(
                 width / 2, height - 13,
                 text="a3,c und a4,t: im V1-Eingabemodell nicht separat vorhanden",
@@ -329,12 +365,15 @@ class ConnectionVisualizer(ctk.CTkFrame):
         for centre in plate_centres:
             c.create_rectangle(
                 centre - plate_width / 2, y0 + 2, centre + plate_width / 2, y1 - 2,
-                fill=self.STEEL, outline="#3F4852",
+                fill=self.STEEL, outline="#3F4852", tags=("internal_plate",),
             )
 
         ys = self._positions(y0 + box_h * 0.2, y1 - box_h * 0.2, data.rows_perpendicular_m)
         for y in ys:
-            c.create_line(x0 + 4, y, x1 - 4, y, fill=self.INK, width=2, dash=(7, 5))
+            c.create_line(
+                x0 + 4, y, x1 - 4, y, fill=self.INK, width=2,
+                dash=(7, 5), tags=("section_dowel_axis",),
+            )
 
         c.create_text(width / 2, 20, text="Eingeschlitztes Stahlblech im Holzquerschnitt", fill=self.INK, font=("Arial", 11, "bold"))
         if self._show_dimensions.get():
@@ -353,6 +392,10 @@ class ConnectionVisualizer(ctk.CTkFrame):
             self._dimension_line(
                 c, x0, y0 - 14, x1, y0 - 14,
                 f"b = {data.width_mm:g} mm", self.DIMENSION,
+            )
+            self._dimension_line(
+                c, x1 + 18, y0, x1 + 18, y1,
+                f"h = {data.height_mm:g} mm", self.DIMENSION,
             )
         c.create_text(
             width / 2, y1 + 34,
@@ -382,6 +425,19 @@ class ConnectionVisualizer(ctk.CTkFrame):
         if count <= 1:
             return [(start + end) / 2]
         return [start + index * (end - start) / (count - 1) for index in range(count)]
+
+    @classmethod
+    def _splice_x_positions(
+        cls, left: float, seam: float, right: float, count: int,
+    ) -> tuple[list[float], list[float]]:
+        """Return one calculated n-column grid on each side of the end joint."""
+        left_span = seam - left
+        right_span = right - seam
+        left_grid = cls._positions(left + left_span * 0.24, seam - left_span * 0.18, count)
+        right_grid = [2 * seam - x for x in reversed(left_grid)]
+        if abs(right_span - left_span) > 1e-6:
+            right_grid = cls._positions(seam + right_span * 0.18, right - right_span * 0.24, count)
+        return left_grid, right_grid
 
     @staticmethod
     def _dimension_line(

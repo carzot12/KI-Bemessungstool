@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+import json
+import os
+import argparse
+import urllib.error
+import urllib.request
+import sys
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from PIL import Image
@@ -156,6 +163,7 @@ class StabduebelApp(ctk.CTk):
         self.workspace_mode = tk.StringVar(value="✦ KI Workspace")
         self.auto_scroll = True
         self.is_user_near_bottom = True
+        self.chat_messages: list[tuple[str, str]] = []
 
         self._build_header()
         self._build_tabs()
@@ -325,6 +333,25 @@ class StabduebelApp(ctk.CTk):
             text_color=self.TEXT,
         ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 8))
 
+        chat_actions = ctk.CTkFrame(chat_card, fg_color="transparent")
+        chat_actions.grid(row=0, column=0, sticky="e", padx=20, pady=(12, 6))
+        if os.getenv("STABDUEBEL_DEBUG", "").lower() in {"1", "true", "yes"}:
+            ctk.CTkButton(
+                chat_actions, text="Chat exportieren", width=112, height=27,
+                fg_color="transparent", hover_color="#EEF1F4", text_color=self.MUTED,
+                command=self._export_chat,
+            ).pack(side="left", padx=(0, 4))
+            ctk.CTkButton(
+                chat_actions, text="Developer Export", width=120, height=27,
+                fg_color="transparent", hover_color="#EEF1F4", text_color=self.MUTED,
+                command=self._export_developer_data,
+            ).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(
+            chat_actions, text="Kopieren", width=82, height=27,
+            fg_color="transparent", hover_color="#EEF1F4", text_color=self.MUTED,
+            command=self._copy_full_chat,
+        ).pack(side="left")
+
         self.chat = ctk.CTkTextbox(
             chat_card,
             wrap="word",
@@ -334,12 +361,13 @@ class StabduebelApp(ctk.CTk):
             border_color=self.BORDER,
         )
         self.chat.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 12))
-        self.chat.insert(
-            "end",
-            "✦ KI\nBeschreibe Last, Holzklasse und Entwurfsziel. "
+        initial_chat_message = (
+            "Beschreibe Last, Holzklasse und Entwurfsziel. "
             "Zum Beispiel: ‚Bemesse einen Stabdübelanschluss für 140 kN mit "
-            "GL24h und möglichst wenigen Stabdübeln.‘\n\n",
+            "GL24h und möglichst wenigen Stabdübeln.‘"
         )
+        self.chat.insert("end", f"✦ KI\n{initial_chat_message}\n\n")
+        self.chat_messages.append(("Assistent", initial_chat_message))
         self.chat.configure(state="disabled")
         self.chat._textbox.tag_configure(  # type: ignore[attr-defined]
             "user_message", background="#F0F1F3", foreground=self.TEXT,
@@ -350,10 +378,14 @@ class StabduebelApp(ctk.CTk):
             "ai_message", background="#FFFFFF", foreground=self.TEXT,
             lmargin1=18, lmargin2=18, rmargin=28, spacing1=8, spacing3=14,
         )
-        self.chat.bind("<B1-Motion>", self._chat_selection_autoscroll, add="+")
-        self.chat.bind("<Command-c>", self._copy_chat_selection)
-        self.chat.bind("<Control-c>", self._copy_chat_selection)
         chat_text = self.chat._textbox  # type: ignore[attr-defined]
+        chat_text.configure(cursor="xterm", takefocus=True)
+        chat_text.bind("<B1-Motion>", self._chat_selection_autoscroll, add="+")
+        chat_text.bind("<Command-c>", self._copy_chat_selection, add="+")
+        chat_text.bind("<Control-c>", self._copy_chat_selection, add="+")
+        chat_text.bind("<Button-2>", self._show_chat_context_menu, add="+")
+        chat_text.bind("<Button-3>", self._show_chat_context_menu, add="+")
+        chat_text.bind("<Control-Button-1>", self._show_chat_context_menu, add="+")
         chat_text.bind("<MouseWheel>", self._on_chat_scroll, add="+")
         chat_text.bind("<Button-4>", self._on_chat_scroll, add="+")
         chat_text.bind("<Button-5>", self._on_chat_scroll, add="+")
@@ -981,6 +1013,7 @@ class StabduebelApp(ctk.CTk):
 
     def _reset_assistant(self) -> None:
         self.assistant.reset()
+        self.chat_messages = [("Assistent", "Neuer Entwurfsdialog gestartet.")]
         self.chat.configure(state="normal")
         self.chat.delete("1.0", "end")
         self.chat.insert("end", "✦ KI\nNeuer Entwurfsdialog gestartet.\n\n", "ai_message")
@@ -1129,6 +1162,7 @@ class StabduebelApp(ctk.CTk):
         should_scroll = self.auto_scroll or sender.lower() in {"sie", "du", "user"}
         self.chat.configure(state="normal")
         is_user = sender.lower() in {"sie", "du", "user"}
+        self.chat_messages.append(("Sie" if is_user else "Assistent", text))
         heading = "DU" if is_user else "✦ KI"
         tag = "user_message" if is_user else "ai_message"
         self.chat.insert("end", f"{heading}\n{text}\n\n", tag)
@@ -1181,8 +1215,71 @@ class StabduebelApp(ctk.CTk):
 
     @staticmethod
     def _copy_chat_selection(event) -> str:
-        event.widget.event_generate("<<Copy>>")
+        try:
+            selected = event.widget.get("sel.first", "sel.last")
+            event.widget.clipboard_clear()
+            event.widget.clipboard_append(selected)
+        except tk.TclError:
+            pass
         return "break"
+
+    def _show_chat_context_menu(self, event) -> str:
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(
+            label="Auswahl kopieren",
+            command=lambda: self._copy_selected_chat_text(event.widget),
+        )
+        menu.add_command(label="Gesamten Chat kopieren", command=self._copy_full_chat)
+        menu.tk_popup(event.x_root, event.y_root)
+        return "break"
+
+    def _copy_selected_chat_text(self, widget) -> None:
+        try:
+            selected = widget.get("sel.first", "sel.last")
+        except tk.TclError:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(selected)
+        self.update_idletasks()
+
+    def _chat_export_text(self) -> str:
+        return "\n\n".join(f"{sender}:\n{text}" for sender, text in self.chat_messages)
+
+    def _copy_full_chat(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self._chat_export_text())
+        self.update_idletasks()
+
+    def _export_chat(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Chat exportieren",
+            defaultextension=".md",
+            filetypes=(("Markdown", "*.md"), ("Text", "*.txt")),
+            initialfile=f"ki-chat-{datetime.now():%Y%m%d-%H%M}.md",
+        )
+        if not path:
+            return
+        Path(path).write_text(self._chat_export_text(), encoding="utf-8")
+
+    def _export_developer_data(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Developer-Daten exportieren",
+            defaultextension=".json",
+            filetypes=(("JSON", "*.json"),),
+            initialfile=f"ki-developer-{datetime.now():%Y%m%d-%H%M}.json",
+        )
+        if not path:
+            return
+        Path(path).write_text(json.dumps(
+            {
+                "conversation_messages": self.assistant.message_history,
+                "tool_events": self.assistant.agent_events,
+                "technical_state": self.assistant.agent_context(),
+            },
+            ensure_ascii=False, indent=2, default=str,
+        ), encoding="utf-8")
 
     def _load_manual_defaults(self) -> None:
         defaults = StabduebelInput()
@@ -1337,7 +1434,8 @@ class StabduebelApp(ctk.CTk):
         widget.configure(state="disabled")
 
 
-def main() -> None:
+def legacy_main() -> None:
+    """Startet die weiterhin verfügbare frühere CustomTkinter-Oberfläche."""
     app = StabduebelApp()
     splash = SplashScreen(app)
 
@@ -1352,5 +1450,45 @@ def main() -> None:
     app.mainloop()
 
 
+def _require_vite_server(url: str) -> None:
+    try:
+        with urllib.request.urlopen(url, timeout=1.5):
+            return
+    except (OSError, urllib.error.URLError) as exc:
+        raise SystemExit(
+            "Der Vite-Development-Server ist nicht erreichbar.\n"
+            "Starte ihn zuerst in einem zweiten Terminal mit:\n"
+            "  npm --prefix frontend run dev\n"
+            f"Erwartete URL: {url}\n"
+            f"Technischer Hinweis: {exc}"
+        ) from exc
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Einheitlicher Einstieg: React standardmäßig, Legacy nur explizit."""
+    parser = argparse.ArgumentParser(description="KI-Bemessungstool starten")
+    parser.add_argument(
+        "--legacy", action="store_true",
+        help="frühere CustomTkinter-Oberfläche starten",
+    )
+    parser.add_argument(
+        "--dev", action="store_true",
+        help="React-Oberfläche vom lokalen Vite-Server laden",
+    )
+    parser.add_argument(
+        "--dev-url", default="http://127.0.0.1:5173",
+        help=argparse.SUPPRESS,
+    )
+    args = parser.parse_args(argv)
+    if args.legacy:
+        legacy_main()
+        return
+    dev_url = args.dev_url if args.dev else None
+    if dev_url:
+        _require_vite_server(dev_url)
+    from desktop.main import launch
+    launch(dev_url)
+
+
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

@@ -26,3 +26,8 @@ dist/
 # VS Code
 .vscode/
 .pytest_cache/
+
+# React/Vite development artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo

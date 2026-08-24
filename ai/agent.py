@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict
 from typing import Any, Callable
 
@@ -26,7 +27,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "parameters": {"type": "object", "additionalProperties": True},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "force_ed_kn": {"type": "number"},
+                        "timber_grade": {"type": "string"},
+                        "width_b_mm": {"type": "number"},
+                        "height_h_mm": {"type": "number"},
+                        "service_class": {"type": "integer", "enum": [1, 2, 3]},
+                        "load_duration_class": {"type": "string", "enum": ["ständig", "lang", "mittel", "kurz", "sehr kurz"]},
+                        "dowel_diameter_d_mm": {"type": "number"},
+                        "number_of_plates_ns": {"type": "integer"},
+                        "plate_thickness_ts_mm": {"type": "number"},
+                        "side_thickness_t1_mm": {"type": "number"},
+                        "middle_thickness_t2_mm": {"type": "number"},
+                        "slot_air_per_cut_ts_l_mm": {"type": "number"},
+                        "rows_parallel_n": {"type": "integer"},
+                        "rows_perpendicular_m": {"type": "integer"},
+                        "a1_mm": {"type": "number"}, "a2_mm": {"type": "number"},
+                        "a3_t_mm": {"type": "number"}, "a4_c_mm": {"type": "number"},
+                        "e1_mm": {"type": "number"}, "e2_mm": {"type": "number"}
+                    },
+                    "additionalProperties": False
+                },
                 "provenance": {"type": "string", "enum": ["USER_FIXED", "AI_DERIVED", "KNOWLEDGE_DERIVED"]},
                 "source": {"type": ["string", "null"]},
                 "autonomy_mode": {"type": ["boolean", "null"]},
@@ -120,16 +143,22 @@ class EngineeringTools:
 
     ALIASES = {
         "force_kn": "force_ed_kn", "force_ed_kn": "force_ed_kn",
+        "Ft_d": "force_ed_kn", "ft_d": "force_ed_kn", "load_Fd_kN": "force_ed_kn",
         "timber_grade": "timber_grade", "dowel_diameter_mm": "dowel_diameter_d_mm",
+        "stabduebeldurchmesser_mm": "dowel_diameter_d_mm",
+        "stabduebeldurchmesser": "dowel_diameter_d_mm",
         "dowel_diameter_d_mm": "dowel_diameter_d_mm", "plate_count": "number_of_plates_ns",
         "number_of_plates_ns": "number_of_plates_ns", "plate_thickness_mm": "plate_thickness_ts_mm",
         "plate_thickness_ts_mm": "plate_thickness_ts_mm", "width_mm": "width_b_mm",
-        "width_b_mm": "width_b_mm", "height_mm": "height_h_mm", "height_h_mm": "height_h_mm",
+        "width_b_mm": "width_b_mm", "b": "width_b_mm", "b_mm": "width_b_mm",
+        "height_mm": "height_h_mm", "height_h_mm": "height_h_mm", "h": "height_h_mm", "h_mm": "height_h_mm",
         "side_thickness_mm": "side_thickness_t1_mm", "side_thickness_t1_mm": "side_thickness_t1_mm",
         "middle_thickness_mm": "middle_thickness_t2_mm", "middle_thickness_t2_mm": "middle_thickness_t2_mm",
         "slot_allowance_mm": "slot_air_per_cut_ts_l_mm", "slot_air_per_cut_ts_l_mm": "slot_air_per_cut_ts_l_mm",
         "service_class": "service_class", "load_duration_class": "load_duration_class",
         "rows_parallel_n": "rows_parallel_n", "rows_perpendicular_m": "rows_perpendicular_m",
+        "a1_mm": "a1_mm", "a2_mm": "a2_mm", "a3_t_mm": "a3_t_mm", "a4_c_mm": "a4_c_mm",
+        "e1_mm": "e1_mm", "e2_mm": "e2_mm",
         "total_fastener_count": "total_fastener_count", "max_utilization": "max_utilization",
     }
 
@@ -147,21 +176,60 @@ class EngineeringTools:
         return self.assistant.agent_context()
 
     def update_design(self, parameters: dict[str, Any], provenance: str, source: str | None, autonomy_mode: bool | None) -> dict[str, Any]:
+        parameters = dict(parameters)
+        nested_autonomy = parameters.pop("autonomy_mode", None)
+        optimization_goal = parameters.pop("optimization_goal", None)
+        if autonomy_mode is None and nested_autonomy is not None:
+            autonomy_mode = bool(nested_autonomy)
+        # Tool-output validation: optional schema properties must never become
+        # zero-valued pseudo-inputs or unmentioned design-condition defaults.
+        parameters = {
+            key: value for key, value in parameters.items()
+            if value is not None and not (
+                key not in {"force_ed_kn"} and isinstance(value, (int, float))
+                and not isinstance(value, bool) and value <= 0
+            )
+        }
+        user_text = (
+            self.assistant.message_history[-1]["content"].casefold()
+            if self.assistant.message_history else ""
+        )
+        if not re.search(r"\b(?:nk\s*[123]|nutzungsklasse|service\s*class|innenraum|außen|aussen|überdacht|ueberdacht)\b", user_text):
+            parameters.pop("service_class", None)
+        if not re.search(r"\b(?:ständig|staendig|lang|mittel|kurz|sehr\s+kurz|lasteinwirkungsdauer)\b", user_text):
+            parameters.pop("load_duration_class", None)
+        if provenance == "USER_FIXED" and user_text:
+            recognized = self.assistant._fallback_extract(user_text)
+            explicit = {
+                key for key, value in recognized.items()
+                if key in self.ALIASES.values() and value is not None
+            }
+            # Natural environmental descriptions are knowledge-derived, not
+            # numeric local extraction; service_class is the only exception.
+            if re.search(r"\b(?:innenraum|außen|aussen|überdacht|ueberdacht)\b", user_text):
+                explicit.add("service_class")
+            parameters = {
+                key: value for key, value in parameters.items()
+                if self.ALIASES.get(key, key) in explicit
+            }
         unknown = sorted(set(parameters) - set(self.ALIASES))
         if unknown:
             raise ValueError("Nicht unterstützte Parameter: " + ", ".join(unknown))
-        extracted = self.assistant.empty_parameter_update()
         mapped = {self.ALIASES[key]: value for key, value in parameters.items()}
         if provenance != "USER_FIXED":
             mapped = {
                 key: value for key, value in mapped.items()
                 if key not in self.assistant.state.fixed_parameters
             }
-        extracted.update(mapped)
         self.assistant._undo_state = self.assistant.copy_state()
-        self.assistant._apply(extracted)
+        self.assistant._apply(mapped)
         if autonomy_mode is not None:
             self.assistant.state.autonomy_mode = autonomy_mode
+        if optimization_goal:
+            self.assistant.state.optimization_goal = str(optimization_goal).upper()
+            self.assistant.state.minimize_fasteners = (
+                self.assistant.state.optimization_goal == "MIN_FASTENER_COUNT"
+            )
         if provenance != "USER_FIXED":
             for key in mapped:
                 self.assistant.state.fixed_parameters.discard(key)
@@ -178,13 +246,29 @@ class EngineeringTools:
         if constraints:
             self.update_design(constraints, "USER_FIXED", None, True)
         self.assistant.state.autonomy_mode = True
+        for key in tuple(self.assistant.state.fixed_parameters):
+            if self.assistant.state.parameter_provenance.get(key) == "OPTIMIZED":
+                self.assistant.state.fixed_parameters.discard(key)
         objectives = {
             "MIN_FASTENER_COUNT": "MIN_FASTENER_COUNT", "FEWER_FASTENERS": "MIN_FASTENER_COUNT",
+            "MINIMIZE_FASTENER_COUNT": "MIN_FASTENER_COUNT",
+            "MINIMIZE_NUMBER_OF_DOWELS": "MIN_FASTENER_COUNT",
+            "MINIMUM_DOWEL_COUNT": "MIN_FASTENER_COUNT",
             "LOWER_UTILIZATION": "LOWER_UTILIZATION", "MORE_RESERVE": "LOWER_UTILIZATION",
             "COMPACT_GEOMETRY": "COMPACT_GEOMETRY", "MIN_PLATE_THICKNESS": "MIN_PLATE_THICKNESS",
-            "BALANCED_DESIGN": "BALANCED_DESIGN",
+            "BALANCED_DESIGN": "BALANCED_DESIGN", "ECONOMIC_DESIGN": "BALANCED_DESIGN",
+            "RECOMMENDATION": "BALANCED_DESIGN", "MAXIMIZE_UTILIZATION": "MAXIMIZE_UTILIZATION",
         }
         normalized = objectives.get(objective.upper(), objective.upper())
+        # "Mach den Nachweis passend" ist kein neues Optimierungsziel. Wenn
+        # bereits ein konkretes Ziel aktiv ist, behält der Agent es bei. So
+        # wird die vom Optimierer ausgewählte Variante auch tatsächlich zum
+        # aktuellen Ergebnis, statt nur als Alternative im Chat aufzutauchen.
+        if normalized == "BALANCED_DESIGN" and self.assistant.state.optimization_goal in {
+            "MIN_FASTENER_COUNT", "LOWER_UTILIZATION", "COMPACT_GEOMETRY",
+            "MIN_PLATE_THICKNESS", "MAXIMIZE_UTILIZATION",
+        }:
+            normalized = self.assistant.state.optimization_goal
         self.assistant.state.optimization_goal = normalized
         self.assistant.state.minimize_fasteners = normalized == "MIN_FASTENER_COUNT"
         self.last_reply = self.assistant.execute_local_command("optimiere den aktuellen Entwurf")
@@ -271,6 +355,7 @@ class LLMAgent:
             "content": f"ENGINEERING_CONTEXT_JSON:\n{context}\n\nUSER_MESSAGE:\n{user_text}",
         }]
         response = self._request(messages, step="agent_turn")
+        tool_call_count = 0
         for _ in range(8):
             calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
             if not calls:
@@ -278,13 +363,22 @@ class LLMAgent:
                 if not text:
                     raise RuntimeError("Das Sprachmodell lieferte keine Antwort.")
                 self.assistant.message_history.append({"role": "assistant", "content": text})
+                self.assistant.last_runtime_trace.update(
+                    TOOL_CALLS=tool_call_count,
+                    RESPONSE_SOURCE="LLM",
+                )
                 result = self.tools.last_reply.result if self.tools.last_reply else self.assistant.state.last_result
                 return AssistantReply(text, result, True, self.assistant._recognized_parameters(result), self.assistant.state.last_recommendation or "")
             outputs = []
+            tool_call_count += len(calls)
             for call in calls:
                 try:
                     args = json.loads(call.arguments or "{}")
                     value = self.tools.dispatch(call.name, args)
+                    self.assistant.agent_events.append({
+                        "type": "tool_call", "name": call.name,
+                        "arguments": args, "result": value,
+                    })
                 except Exception as exc:
                     LOGGER.exception("Agent tool failed model=%s tool=%s", self.model, call.name)
                     value = {"error": type(exc).__name__, "message": str(exc)}
@@ -296,10 +390,29 @@ class LLMAgent:
         try:
             kwargs = {
                 "model": self.model,
-                "instructions": self.assistant.system_prompt + "\n\n" + (
-                    "Du führst das Gespräch. Nutze Engineering-Tools für jede technische Zahl oder Normbewertung. "
+                "instructions": self.assistant.agent_system_prompt + "\n\n" + (
+                    "Du führst ein natürliches Gespräch und darfst ohne Tool direkt antworten. "
+                    "Nutze Engineering-Tools für jede technische Zahl oder Normbewertung. "
                     "Erfinde nie Werte. Explizite Benutzerwerte sind USER_FIXED. Fachfragen ändern den State nicht. "
-                    "Antworte nach Toolaufrufen natürlich und knapp auf Deutsch."
+                    "Antworte nach Toolaufrufen natürlich auf Deutsch, normalerweise in 1 bis 4 Sätzen. "
+                    "Die UI zeigt technische Details rechts; dupliziere keine Listen im Chat und zeige dort niemals "
+                    "interne Intents, Actions, Provenance, Toolnamen, JSON oder Python-Feldnamen. "
+                    "Eine ausdrückliche Optimierungsanweisung wird direkt ausgeführt: Schütze nur ausdrücklich vom "
+                    "Benutzer vorgegebene Werte und lass frühere Optimiererwerte wieder variieren. "
+                    "Eine alleinstehende Zahl wählt eine unmittelbar zuvor nummerierte Option aus. "
+                    "Speichere jede eindeutig erkannte technische Benutzerangabe sofort mit update_design, auch wenn "
+                    "danach noch Pflichtangaben fehlen. Bei 'rest mach selber' setze autonomy_mode=true. Sobald Last, "
+                    "Holzklasse, Querschnitt, Nutzungsklasse und Lasteinwirkungsdauer vorhanden sind, führe die "
+                    "verlangte Optimierung ohne Rückbestätigung aus. Ein allgemeines 'mach den Nachweis passend' "
+                    "behält das bereits aktive konkrete Optimierungsziel bei. Technische Warum-Fragen beantwortest "
+                    "du erst nach explain_calculation beziehungsweise compare_variants und ausschließlich anhand "
+                    "des aktuellen Ergebnisses und real berechneter Varianten. Korrigiere eine falsche Prämisse kurz. "
+                    "VERBINDLICHER ANTWORTVERTRAG: höchstens 70 Wörter und höchstens 4 Sätze, keine Aufzählung. "
+                    "Nach Berechnung oder Optimierung höchstens Status, Kernkonfiguration und Verweis auf rechts. "
+                    "Bei Dank oder Gruß genau ein natürlicher Satz ohne neue Rückfrage."
+                    " Eine eindeutige Parameteränderung ist eine Handlungsanweisung: Speichere sie und rufe, wenn "
+                    "alle Pflichtangaben vorhanden sind, im selben Turn calculate_design auf. Frage nicht erst, ob "
+                    "du rechnen sollst."
                 ),
                 "input": input_data,
                 "tools": TOOL_DEFINITIONS,

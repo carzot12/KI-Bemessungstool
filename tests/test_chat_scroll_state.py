@@ -40,6 +40,7 @@ def shell(last: float = 1.0):
     app.new_message_button = FakeButton()
     app.auto_scroll = True
     app.is_user_near_bottom = True
+    app.chat_messages = []
     return app
 
 
@@ -74,3 +75,14 @@ def test_scroll_up_disables_auto_scroll() -> None:
     app._update_chat_scroll_state()
     assert app.is_user_near_bottom is False
     assert app.auto_scroll is False
+
+
+def test_chat_export_has_copyable_roles_and_messages() -> None:
+    app = shell()
+    app.chat_messages = [
+        ("Sie", "Hallo"),
+        ("Assistent", "Hallo! Wie kann ich helfen?"),
+    ]
+    assert app._chat_export_text() == (
+        "Sie:\nHallo\n\nAssistent:\nHallo! Wie kann ich helfen?"
+    )

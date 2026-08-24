@@ -23,6 +23,7 @@ from calculations.oenorm_validation import (
 ROWS_PARALLEL = (1, 2, 3, 4)
 ROWS_PERPENDICULAR = (2, 3, 4, 5, 6)
 SUPPORTED_DOWEL_DIAMETERS_MM = (8.0, 10.0, 12.0, 16.0, 20.0, 24.0)
+PREFERRED_DESIGN_DIAMETERS_MM = (12.0, 16.0)
 SUPPORTED_PLATE_COUNTS = (1, 2)
 # Im aktuellen Scope tatsächlich belegte Dicken: 5 mm im IHBV-Tabellenwerk
 # (Zuglaschenstoß mit innenliegendem Stahlblech) und 6 mm im verifizierten
@@ -30,6 +31,95 @@ SUPPORTED_PLATE_COUNTS = (1, 2)
 # andere Bauteile/Verbindungsmittel und werden daher nicht freigeschaltet.
 SUPPORTED_PLATE_THICKNESSES_MM = (5.0, 6.0)
 GEOMETRY_STEP_MM = 5.0
+RESERVE_TARGET_UTILIZATION = 0.65
+
+
+def _connection_area(item: "EvaluatedVariant") -> float:
+    data = item.input
+    return (
+        2.0 * data.a3_t_mm + (data.rows_parallel_n - 1) * data.a1_mm
+    ) * (
+        2.0 * data.a4_c_mm + (data.rows_perpendicular_m - 1) * data.a2_mm
+    )
+
+
+def _preferred_candidates(
+    feasible: list["EvaluatedVariant"], fixed: set[str],
+) -> list["EvaluatedVariant"]:
+    """Engineering candidate set; never changes explicit user diameters."""
+    if "dowel_diameter_d_mm" in fixed:
+        return feasible
+    preferred = [
+        item for item in feasible
+        if item.input.dowel_diameter_d_mm in PREFERRED_DESIGN_DIAMETERS_MM
+    ]
+    return preferred or feasible
+
+
+def engineering_rank_key(item: "EvaluatedVariant", goal: str | None) -> tuple:
+    """Ranks already calculated/admissible variants without new engineering maths."""
+    eta = item.result.governing_check.utilization
+    diameter_preference = (
+        PREFERRED_DESIGN_DIAMETERS_MM.index(item.input.dowel_diameter_d_mm)
+        if item.input.dowel_diameter_d_mm in PREFERRED_DESIGN_DIAMETERS_MM
+        else len(PREFERRED_DESIGN_DIAMETERS_MM)
+    )
+    if goal == "MIN_FASTENER_COUNT":
+        return (item.fastener_count, item.input.number_of_plates_ns,
+                abs(eta - 0.85), diameter_preference, _connection_area(item))
+    if goal == "COMPACT_GEOMETRY":
+        return (_connection_area(item), item.fastener_count,
+                item.input.number_of_plates_ns, abs(eta - 0.85), diameter_preference)
+    if goal == "LOWER_UTILIZATION":
+        return (abs(eta - RESERVE_TARGET_UTILIZATION), item.fastener_count,
+                item.input.number_of_plates_ns, diameter_preference, _connection_area(item))
+    if goal == "MAXIMIZE_UTILIZATION":
+        return (-eta, item.fastener_count, item.input.number_of_plates_ns,
+                diameter_preference, _connection_area(item))
+    # Default: wirtschaftliche, robuste Empfehlung statt Extremwert.
+    return (item.input.number_of_plates_ns, item.fastener_count,
+            diameter_preference, abs(eta - 0.85), _connection_area(item))
+
+
+def ranked_feasible_variants(
+    optimization: "OptimizationResult", goal: str | None,
+    fixed_parameters: set[str] | None = None,
+) -> list["EvaluatedVariant"]:
+    feasible = [
+        item for item in optimization.evaluated
+        if item.validation.admissible and item.result.passed
+    ]
+    candidates = _preferred_candidates(feasible, fixed_parameters or set())
+    return sorted(candidates, key=lambda item: engineering_rank_key(item, goal))
+
+
+def curated_feasible_variants(
+    optimization: "OptimizationResult", goal: str | None,
+    fixed_parameters: set[str] | None = None, limit: int = 12,
+) -> list["EvaluatedVariant"]:
+    """Returns diverse, real variants rather than repeated geometry splits."""
+    ranked = ranked_feasible_variants(optimization, goal, fixed_parameters)
+    chosen: list[EvaluatedVariant] = []
+    signatures: set[tuple[int, float, int, int]] = set()
+
+    def add(item: EvaluatedVariant | None) -> None:
+        if item is None or len(chosen) >= limit:
+            return
+        signature = (
+            item.input.number_of_plates_ns, item.input.dowel_diameter_d_mm,
+            item.input.rows_parallel_n, item.input.rows_perpendicular_m,
+        )
+        if signature not in signatures:
+            signatures.add(signature)
+            chosen.append(item)
+
+    add(optimization.selected)
+    for diameter in PREFERRED_DESIGN_DIAMETERS_MM:
+        add(next((item for item in ranked if item.input.dowel_diameter_d_mm == diameter), None))
+    add(min(ranked, key=lambda item: item.result.governing_check.utilization, default=None))
+    for item in ranked:
+        add(item)
+    return chosen
 
 
 def _geometry_candidates(
@@ -237,9 +327,11 @@ def optimize_stabduebel(
             ),
         )
 
+    candidates = _preferred_candidates(feasible, fixed)
+
     if optimization_goal == "MIN_PLATE_THICKNESS":
         selected = min(
-            feasible,
+            candidates,
             key=lambda item: (
                 item.input.plate_thickness_ts_mm,
                 item.fastener_count,
@@ -247,40 +339,15 @@ def optimize_stabduebel(
             ),
         )
     elif optimization_goal == "COMPACT_GEOMETRY":
-        selected = min(
-            feasible,
-            key=lambda item: (
-                (2.0 * item.input.a3_t_mm
-                 + (item.input.rows_parallel_n - 1) * item.input.a1_mm)
-                * (2.0 * item.input.a4_c_mm
-                   + (item.input.rows_perpendicular_m - 1) * item.input.a2_mm),
-                item.fastener_count,
-            ),
-        )
+        selected = min(candidates, key=lambda item: engineering_rank_key(item, optimization_goal))
     elif optimization_goal == "LOWER_UTILIZATION":
-        selected = min(feasible, key=lambda item: item.result.governing_check.utilization)
-    elif maximize_utilization:
-        selected = max(
-            feasible,
-            key=lambda item: (
-                item.result.governing_check.utilization,
-                -item.fastener_count,
-            ),
-        )
-    elif minimize_fasteners:
-        selected = min(
-            feasible,
-            key=lambda item: (
-                item.fastener_count,
-                item.input.plate_thickness_ts_mm,
-                item.result.governing_check.utilization,
-            ),
-        )
+        selected = min(candidates, key=lambda item: engineering_rank_key(item, optimization_goal))
+    elif maximize_utilization or optimization_goal == "MAXIMIZE_UTILIZATION":
+        selected = min(candidates, key=lambda item: engineering_rank_key(item, "MAXIMIZE_UTILIZATION"))
+    elif minimize_fasteners or optimization_goal == "MIN_FASTENER_COUNT":
+        selected = min(candidates, key=lambda item: engineering_rank_key(item, "MIN_FASTENER_COUNT"))
     else:
-        selected = min(
-            feasible,
-            key=lambda item: item.result.governing_check.utilization,
-        )
+        selected = min(candidates, key=lambda item: engineering_rank_key(item, "BALANCED_DESIGN"))
 
     return OptimizationResult(
         selected=selected,

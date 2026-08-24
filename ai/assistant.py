@@ -3,6 +3,7 @@ from __future__ import annotations
 """Einfacher V1-Assistent: Sprache, Zustand, Material und Rechenaufruf."""
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -42,6 +43,7 @@ TWO_SHEAR_ONE_INTERNAL_PLATE = "TWO_SHEAR_ONE_INTERNAL_PLATE"
 MULTI_SHEAR_TWO_INTERNAL_PLATES = "MULTI_SHEAR_TWO_INTERNAL_PLATES"
 GEOMETRY_OPTIMIZATION_VERIFIED = True
 KEYCHAIN_SERVICE = "KI-Bemessungstool OpenAI"
+LOGGER = logging.getLogger("ki_bemessungstool.runtime")
 
 
 class ParameterCategory(str, Enum):
@@ -217,11 +219,13 @@ class StabduebelAssistant:
         self.conversation = DialogueMemory()
         self._api_key, self.llm_key_source = self._resolve_api_key()
         self.message_history: list[dict[str, str]] = []
+        self.agent_events: list[dict[str, Any]] = []
         self.llm_status = "UNTESTED" if self._api_key else "LOCAL"
         self.llm_error: str | None = None
         self._llm_client: Any = None
         self._agent: Any = None
         self._force_local = False
+        self.last_runtime_trace: dict[str, Any] = {}
         self.debug_enabled = os.getenv("STABDUEBEL_DEBUG", "").lower() in {
             "1", "true", "yes",
         }
@@ -262,10 +266,30 @@ class StabduebelAssistant:
         self._comparison_results = []
         self.conversation = DialogueMemory()
         self.message_history = []
+        self.agent_events = []
+
+    @property
+    def agent_system_prompt(self) -> str:
+        """Conversational part; legacy JSON extraction rules are excluded."""
+        marker = "V1 – STRUKTURIERTE AUSGABE"
+        return self.system_prompt.split(marker, 1)[0].rstrip()
 
     def respond(self, user_text: str) -> AssistantReply:
+        self.last_runtime_trace = {
+            "USER_TEXT": user_text,
+            "MODE": "KI_ONLINE" if self.llm_online else "LOCAL_OR_UNTESTED",
+            "LLM_AVAILABLE": bool(self._api_key),
+            "LLM_REQUEST_STARTED": False,
+            "MODEL": MODEL,
+            "TOOL_CALLS": 0,
+            "RESPONSE_SOURCE": "PENDING",
+        }
         if self._api_key and not self._force_local:
             if not self._ensure_llm_online():
+                self.last_runtime_trace.update(
+                    MODE="LLM_ERROR", RESPONSE_SOURCE="LLM_ERROR",
+                )
+                self._log_runtime_trace()
                 return AssistantReply(
                     f"LLM-Aufruf fehlgeschlagen. {self.llm_error}",
                     self.state.last_result,
@@ -273,8 +297,34 @@ class StabduebelAssistant:
                     self._recognized_parameters(self.state.last_result),
                     self.llm_error or "",
                 )
-            return self._agent.respond(user_text)
-        return self._respond_legacy(user_text)
+            self.last_runtime_trace.update(
+                MODE="KI_ONLINE", LLM_REQUEST_STARTED=True,
+            )
+            try:
+                reply = self._agent.respond(user_text)
+            except Exception:
+                self.llm_status = "ERROR"
+                self.last_runtime_trace["MODE"] = "LLM_ERROR"
+                self.last_runtime_trace["RESPONSE_SOURCE"] = "LLM_ERROR"
+                self._log_runtime_trace()
+                raise
+            self._log_runtime_trace()
+            return reply
+        reply = self._respond_legacy(user_text)
+        self.last_runtime_trace.update(
+            MODE="LOKALER_MODUS", RESPONSE_SOURCE="LOCAL_TEMPLATE",
+        )
+        self._log_runtime_trace()
+        return reply
+
+    def _log_runtime_trace(self) -> None:
+        line = " ".join(
+            f"{key}={json.dumps(value, ensure_ascii=False)}"
+            for key, value in self.last_runtime_trace.items()
+        )
+        LOGGER.info("CHAT_RUNTIME %s", line)
+        if self.debug_enabled:
+            print("CHAT_RUNTIME", line, flush=True)
 
     def _respond_legacy(self, user_text: str) -> AssistantReply:
         self.conversation.last_user_message = user_text
@@ -331,14 +381,11 @@ class StabduebelAssistant:
         optimization = self.state.last_optimization
         if optimization is None:
             return []
-        variants = sorted(
-            optimization.evaluated,
-            key=lambda item: (
-                not (item.validation.admissible and item.result.passed),
-                item.fastener_count,
-                item.result.governing_check.utilization,
-            ),
-        )[:limit]
+        from ai.optimizer import curated_feasible_variants
+        variants = curated_feasible_variants(
+            optimization, self.state.optimization_goal,
+            self.state.fixed_parameters, limit,
+        )
         return [
             {
                 "id": index,
@@ -350,6 +397,8 @@ class StabduebelAssistant:
                 "governing_check": item.result.governing_check.name,
                 "passed": item.result.passed,
                 "norm_admissible": item.validation.admissible,
+                "plate_count": item.input.number_of_plates_ns,
+                "plate_thickness_mm": item.input.plate_thickness_ts_mm,
             }
             for index, item in enumerate(variants, start=1)
         ]
@@ -2646,28 +2695,14 @@ class StabduebelAssistant:
 
     def _maximum_load_text(self) -> str:
         """Bestimmt die Grenzlast ausschließlich über wiederholte Kernaufrufe."""
-        base = self._build_input()
-        low_load_values = asdict(base)
-        low_load_values["force_ed_kn"] = 0.001
-        low_load_input = StabduebelInput(**low_load_values)
-        fixed = set(self.state.fixed_parameters)
-        for key in ("rows_parallel_n", "rows_perpendicular_m", "dowel_diameter_d_mm"):
-            if key in self.state.parameters:
-                fixed.add(key)
-        resolved = optimize_stabduebel(
-            low_load_input,
-            fixed_parameters=fixed,
-            max_utilization=1.0,
-            minimize_fasteners=self.state.minimize_fasteners,
-            required_fastener_count=self.state.requested_fastener_count,
+        # Gefragt ist die Tragfähigkeit der *aktuellen Verbindung*. Eine
+        # vorgelagerte Neuoptimierung bei Hilfslast würde Geometrie, Bleche oder
+        # Anordnung austauschen und damit eine andere Verbindung untersuchen.
+        data = (
+            self.state.last_result.input
+            if self.state.last_result is not None
+            else self._build_input()
         )
-        if resolved.selected is None:
-            return (
-                "Für die aktuellen Randbedingungen kann keine normative Maximallast "
-                "angegeben werden, weil keine geometrisch und normativ zulässige "
-                "Konfiguration im unterstützten Suchraum gefunden wurde."
-            )
-        data = resolved.selected.input
 
         def evaluate(force_kn: float) -> StabduebelResult | None:
             values = asdict(data)
