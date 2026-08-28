@@ -194,7 +194,7 @@ class EngineeringTools:
             self.assistant.message_history[-1]["content"].casefold()
             if self.assistant.message_history else ""
         )
-        if not re.search(r"\b(?:nk\s*[123]|nutzungsklasse|service\s*class|innenraum|außen|aussen|überdacht|ueberdacht)\b", user_text):
+        if not re.search(r"\b(?:nkl?\s*[123]|nutzungsklasse|service\s*class|innenraum|außen|aussen|überdacht|ueberdacht)\b", user_text):
             parameters.pop("service_class", None)
         if not re.search(r"\b(?:ständig|staendig|lang|mittel|kurz|sehr\s+kurz|lasteinwirkungsdauer)\b", user_text):
             parameters.pop("load_duration_class", None)

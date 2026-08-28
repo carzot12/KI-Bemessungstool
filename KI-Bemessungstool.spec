@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 project_root = Path(SPECPATH)
@@ -12,6 +13,7 @@ if not (is_macos or is_windows):
     raise RuntimeError("Diese Spec unterstützt derzeit macOS und Windows.")
 
 datas = [
+    (str(project_root / "frontend" / "dist"), "frontend/dist"),
     (str(project_root / "assets" / "logo.png"), "assets"),
     (
         str(project_root / "infopol" / "materials" / "timber.json"),
@@ -22,13 +24,15 @@ datas = [
         "ai/prompts",
     ),
 ]
+datas += collect_data_files("reportlab")
+hiddenimports = ["openai", *collect_submodules("reportlab")]
 
 a = Analysis(
     [str(project_root / "app.py")],
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,
-    hiddenimports=["openai"],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

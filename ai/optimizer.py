@@ -251,6 +251,33 @@ def optimize_stabduebel(
                                 and rows_parallel * rows_perpendicular != required_fastener_count
                             ):
                                 continue
+                            candidate_a2 = (
+                                base_input.a2_mm
+                                if "a2_mm" in fixed
+                                else base_input.a2_mm
+                                if diameter == 12.0
+                                else 3.0 * diameter
+                            )
+                            # a4,c is an actual edge distance in the input
+                            # model. Automatically generated grids are centred;
+                            # the validator independently checks the normative
+                            # minimum. Explicit user geometry is never moved.
+                            candidate_a4 = (
+                                base_input.a4_c_mm
+                                if "a4_c_mm" in fixed
+                                else (
+                                    base_input.height_h_mm
+                                    - (rows_perpendicular - 1) * candidate_a2
+                                ) / 2.0
+                            )
+                            if (
+                                "a4_c_mm" not in fixed
+                                and candidate_a4 < 3.0 * diameter
+                            ):
+                                # A centred automatic grid is only a candidate
+                                # when both residual timber edges satisfy the
+                                # existing minimum-distance rule.
+                                continue
                             candidate = replace(
                                 geometry_base,
                                 number_of_plates_ns=plate_count,
@@ -271,13 +298,7 @@ def optimize_stabduebel(
                                     if diameter == 12.0
                                     else 5.0 * diameter
                                 ),
-                                a2_mm=(
-                                    base_input.a2_mm
-                                    if "a2_mm" in fixed
-                                    else base_input.a2_mm
-                                    if diameter == 12.0
-                                    else 3.0 * diameter
-                                ),
+                                a2_mm=candidate_a2,
                                 a3_t_mm=(
                                     base_input.a3_t_mm
                                     if "a3_t_mm" in fixed
@@ -285,13 +306,7 @@ def optimize_stabduebel(
                                     if diameter == 12.0
                                     else max(7.0 * diameter, 80.0)
                                 ),
-                                a4_c_mm=(
-                                    base_input.a4_c_mm
-                                    if "a4_c_mm" in fixed
-                                    else base_input.a4_c_mm
-                                    if diameter == 12.0
-                                    else 3.0 * diameter
-                                ),
+                                a4_c_mm=candidate_a4,
                                 rows_parallel_n=rows_parallel,
                                 rows_perpendicular_m=rows_perpendicular,
                             )

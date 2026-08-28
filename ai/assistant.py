@@ -175,6 +175,8 @@ class ConversationState:
     parameter_provenance: dict[str, str] = field(default_factory=dict)
     parameter_sources: dict[str, str] = field(default_factory=dict)
     current_explanation: str = ""
+    report_variant_ids: set[str] = field(default_factory=set)
+    last_maximum_load: dict[str, Any] | None = None
 
     @property
     def current_technical_state(self) -> dict[str, float | int | str]:
@@ -283,6 +285,13 @@ class StabduebelAssistant:
             "MODEL": MODEL,
             "TOOL_CALLS": 0,
             "RESPONSE_SOURCE": "PENDING",
+            "INTENT": None,
+            "ACTION": None,
+            "STATE_CHANGED": False,
+            "CALCULATION_STARTED": False,
+            "VARIANT_COUNT": 0,
+            "FEASIBLE_VARIANT_COUNT": 0,
+            "SELECTED_VARIANT": None,
         }
         if self._api_key and not self._force_local:
             if not self._ensure_llm_online():
@@ -485,6 +494,13 @@ class StabduebelAssistant:
 
         intent = str(extracted["intent"])
         normalized_goal = self._normalize_common_language(user_text.lower())
+        if re.search(
+            r"(?:welche|welcher|was für eine?).*(?:variante|lösung).*"
+            r"(?:würdest du|soll ich|nimmst du|empfiehlst du)|"
+            r"(?:würdest du|soll ich|nimmst du|empfiehlst du).*(?:variante|lösung)",
+            normalized_goal,
+        ):
+            intent = "COMPARE"
         if re.search(r"möglichst\s+kompakt|kompakte?\s+geometrie", normalized_goal):
             self.state.optimization_goal = "COMPACT_GEOMETRY"
             intent = "OPTIMIZE"
@@ -495,11 +511,16 @@ class StabduebelAssistant:
         elif re.search(r"möglichst\s+dünn(?:es|e)?\s+blech", normalized_goal):
             self.state.optimization_goal = "MIN_PLATE_THICKNESS"
             intent = "OPTIMIZE"
-        elif re.search(r"gute\s+lösung|such.*was\s+gutes", normalized_goal):
+        elif re.search(
+            r"gute\s+lösung|such.*was\s+gutes|"
+            r"wirtschaftlich(?:e|en|er|es)?\s+(?:lösung|entwurf|variante)|"
+            r"finde\s+(?:eine\s+)?wirtschaftlich|beste\s+lösung",
+            normalized_goal,
+        ):
             self.state.optimization_goal = "BALANCED_DESIGN"
             intent = "OPTIMIZE"
         if intent in {"OPTIMIZE", "RECOMMEND_IMPROVEMENT"} or re.search(
-            r"\b(?:mach\w*\s+(?:du|selbst|selber)|entscheide\w*\s+du|"
+            r"\b(?:mach\w*\s+(?:du|selbst|selber)|du\s+entscheidest|entscheide\w*\s+du|"
             r"selber\s+wählen|selbst\s+wählen|mach\w*\s+einen\s+vorschlag)\b",
             user_text,
             re.IGNORECASE,
@@ -507,6 +528,10 @@ class StabduebelAssistant:
             self.state.autonomy_mode = True
         self.conversation.last_intent = intent
         self.conversation.last_action = self._validated_action(extracted, intent)
+        self.last_runtime_trace.update(
+            INTENT=intent,
+            ACTION=self.conversation.last_action,
+        )
         if intent == "PARAMETER_CHANGE" and not self._has_extracted_change(extracted):
             text = self._chat_acknowledgement(user_text)
             self.conversation.last_action = "CHAT"
@@ -644,6 +669,15 @@ class StabduebelAssistant:
                 text, self.state.last_result, used_llm,
                 self._recognized_parameters(self.state.last_result), text,
             )
+        if intent == "TARGET_UTILIZATION" and self.state.last_result is not None:
+            self._undo_state = state_before_change
+            text = self._load_for_target_utilization(
+                float(extracted.get("max_utilization") or 0.9)
+            )
+            return AssistantReply(
+                text, self.state.last_result, used_llm,
+                self._recognized_parameters(self.state.last_result), text,
+            )
 
         missing = self._missing_required_parameters()
         if missing:
@@ -660,12 +694,17 @@ class StabduebelAssistant:
         # Bei einer normalen Änderung/What-if bleibt der aktuelle Entwurf
         # geometrisch derselbe. Nur ein ausdrücklicher Optimierungs-Intent darf
         # die vom letzten Lauf gewählten n, m oder d erneut variieren.
-        if intent not in {"OPTIMIZE", "TARGET_UTILIZATION", "NEW_DESIGN"}:
+        diameter_changed = extracted.get("dowel_diameter_d_mm") is not None
+        if intent not in {"OPTIMIZE", "TARGET_UTILIZATION", "NEW_DESIGN"} and not diameter_changed:
             for key in (
                 "rows_parallel_n", "rows_perpendicular_m", "dowel_diameter_d_mm",
             ):
                 if key in self.state.parameters:
                     run_fixed.add(key)
+        self.last_runtime_trace.update(
+            STATE_CHANGED=True,
+            CALCULATION_STARTED=True,
+        )
         optimization = optimize_stabduebel(
             base_input,
             fixed_parameters=run_fixed,
@@ -677,6 +716,10 @@ class StabduebelAssistant:
             optimization_goal=self.state.optimization_goal,
         )
         self.state.last_optimization = optimization
+        self.last_runtime_trace.update(
+            VARIANT_COUNT=optimization.evaluated_count,
+            FEASIBLE_VARIANT_COUNT=optimization.feasible_count,
+        )
         if optimization.selected is None:
             displayed = min(
                 optimization.evaluated,
@@ -698,6 +741,7 @@ class StabduebelAssistant:
             )
             failure_text = self._optimization_failure_text(optimization, base_input)
             self.state.last_failed_action = failure_text
+            self.last_runtime_trace["SELECTED_VARIANT"] = None
             self._undo_state = state_before_change
             return AssistantReply(
                 (
@@ -715,6 +759,11 @@ class StabduebelAssistant:
             )
 
         selected = optimization.selected
+        self.last_runtime_trace["SELECTED_VARIANT"] = {
+            "diameter_mm": selected.input.dowel_diameter_d_mm,
+            "rows_parallel": selected.input.rows_parallel_n,
+            "rows_perpendicular": selected.input.rows_perpendicular_m,
+        }
         previous_result = state_before_change.last_result
         self.conversation.previous_result = previous_result
         self.state.last_result = selected.result
@@ -942,6 +991,57 @@ class StabduebelAssistant:
 
     def _handle_contextual_chat(self, user_text: str) -> AssistantReply | None:
         normalized = self._normalize_common_language(user_text.lower().strip())
+        confirmation = re.fullmatch(
+            r"(?:ja|genau|korrekt|stimmt|passt|übernehmen|nimm\s+das|mach\s+das)[.!]?",
+            normalized,
+        )
+        rejection = re.fullmatch(
+            r"(?:nein|doch\s+nicht|nicht\s+übernehmen)[.!]?",
+            normalized,
+        )
+        if self.state.pending_state_proposal and confirmation:
+            proposal = self.state.pending_state_proposal
+            self.state.pending_state_proposal = None
+            self.state.pending_clarification = None
+            if "service_class" in proposal:
+                return self._respond_technical(f"NK{int(proposal['service_class'])}")
+            if "load_duration_class" in proposal:
+                return self._respond_technical(str(proposal["load_duration_class"]))
+        if self.state.pending_state_proposal and rejection:
+            self.state.pending_state_proposal = None
+            self.state.pending_clarification = None
+            text = "Alles klar, ich habe den vorgeschlagenen Wert nicht übernommen."
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+
+        autonomy_reply = re.fullmatch(
+            r"(?:du\s+entscheidest|entscheide\s+du|entscheid\s+du|"
+            r"such\s+du\s+(?:die\s+)?beste\s+lösung|ist\s+mir\s+egal|"
+            r"optimier(?:e)?(?:\s+(?:das|du))?|nimm\s+die\s+beste\s+variante|"
+            r"mach\s+(?:du\s+)?(?:einen\s+)?vorschlag|beide)[.!]?",
+            normalized,
+        )
+        if autonomy_reply:
+            pending = self.state.pending_clarification
+            optimizable = {
+                "dowel_diameter_d_mm", "number_of_plates_ns",
+                "plate_thickness_ts_mm", "arrangement",
+                "rows_parallel_n", "rows_perpendicular_m",
+                "side_thickness_t1_mm", "middle_thickness_t2_mm",
+            }
+            if pending in optimizable:
+                keys = {
+                    "arrangement": {"rows_parallel_n", "rows_perpendicular_m"},
+                }.get(pending, {pending})
+                for key in keys:
+                    self.state.fixed_parameters.discard(key)
+                    self.state.parameters.pop(key, None)
+                    self.state.parameter_provenance.pop(key, None)
+            self.state.pending_clarification = None
+            self.state.pending_state_proposal = None
+            self.state.autonomy_mode = True
+            if self.state.optimization_goal is None:
+                self.state.optimization_goal = "BALANCED_DESIGN"
+            return self._respond_technical("optimiere den aktuellen Entwurf")
         if re.search(
             r"(?:was\s+bedeutet|erklär|warum).*(?:lasteinwirkungsdauer|einwirkungsdauer)",
             normalized,
@@ -986,16 +1086,6 @@ class StabduebelAssistant:
             return AssistantReply(text, self.state.last_result, False, interpretation=text)
         if re.search(r"geht(?:'s|s|\s+es)?\s+auch\s+mit\s+einem", normalized):
             return self._respond_technical("was wäre mit einem Stahlblech")
-        if (
-            self.state.pending_state_proposal
-            and re.fullmatch(r"(?:ja|passt|übernehmen|nimm\s+das|mach\s+das)[.!]?", normalized)
-        ):
-            proposal = self.state.pending_state_proposal
-            self.state.pending_state_proposal = None
-            if "service_class" in proposal:
-                return self._respond_technical(f"NK{int(proposal['service_class'])}")
-            if "load_duration_class" in proposal:
-                return self._respond_technical(str(proposal["load_duration_class"]))
         if re.search(r"\b(?:beheizter?\s+innenraum|innenraum)\b", normalized):
             duration = next(
                 (value for value in ("sehr kurz", "ständig", "mittel", "kurz", "lang")
@@ -1632,7 +1722,7 @@ class StabduebelAssistant:
             data["intent"] = "OPTIMIZE"
 
         service_class = re.search(
-            r"\b(?:nutzungsklasse|nuzungsklasse|nutzungsklase|ntuzungsklasse|nk|"
+            r"\b(?:nutzungsklasse|nuzungsklasse|nutzungsklase|ntuzungsklasse|nkl?|"
             r"service\s*class)\s*(1|2|3|eins|zwei|drei)\b",
             normalized,
         )
@@ -1934,6 +2024,12 @@ class StabduebelAssistant:
         )
         if minimize:
             data["minimize_fasteners"] = True
+            data["intent"] = "OPTIMIZE"
+        if re.search(
+            r"wirtschaftlich(?:e|en|er|es)?\s+(?:lösung|entwurf|variante)|"
+            r"finde\s+(?:eine\s+)?wirtschaftlich",
+            normalized,
+        ):
             data["intent"] = "OPTIMIZE"
         return data
 
@@ -2731,6 +2827,12 @@ class StabduebelAssistant:
         result = evaluate(low)
         if result is None:
             return "Die deterministische Maximallastsuche konnte kein Ergebnis bestimmen."
+        self.state.last_maximum_load = {
+            "forceEdKn": low,
+            "utilization": result.governing_check.utilization,
+            "governingCheck": result.governing_check.name,
+            "input": asdict(result.input),
+        }
         item = result.input
         count = item.rows_parallel_n * item.rows_perpendicular_m
         return (
@@ -2742,6 +2844,39 @@ class StabduebelAssistant:
             f"{item.width_b_mm:g} × {item.height_h_mm:g} mm und "
             f"{item.number_of_plates_ns} Stahlbleche. Die Norm- und Geometrievalidierung "
             "ist an dieser Grenzlast erfüllt."
+        )
+
+    def _load_for_target_utilization(self, target: float) -> str:
+        data = self.state.last_result.input
+        target = max(0.01, min(1.0, target))
+
+        def evaluate(force_kn: float) -> StabduebelResult:
+            values = asdict(data)
+            values["force_ed_kn"] = force_kn
+            return calculate_stabduebel(StabduebelInput(**values))
+
+        low, high = 0.0, max(1.0, data.force_ed_kn)
+        while evaluate(high).governing_check.utilization < target and high < 1_000_000:
+            high *= 2
+        for _ in range(60):
+            middle = (low + high) / 2
+            if evaluate(middle).governing_check.utilization < target:
+                low = middle
+            else:
+                high = middle
+        result = evaluate((low + high) / 2)
+        self.state.last_maximum_load = {
+            "forceEdKn": (low + high) / 2,
+            "utilization": result.governing_check.utilization,
+            "governingCheck": result.governing_check.name,
+            "input": asdict(result.input),
+        }
+        return (
+            f"Bei einer Bemessungslast von rund {(low + high) / 2:.2f} kN "
+            f"erreicht die unveränderte Verbindung η = "
+            f"{result.governing_check.utilization:.2f}. Maßgebend ist "
+            f"„{result.governing_check.name}“. Es wurde ausschließlich Ft,d "
+            "variiert; die Geometrie und Verbindungsmittel blieben fix."
         )
 
     @staticmethod

@@ -1,0 +1,33 @@
+{
+  "project": "Demo Zuglaschenstoß",
+  "input": {
+    "force_ed_kn": 140,
+    "timber_grade": "GL24h",
+    "width_b_mm": 200,
+    "height_h_mm": 240,
+    "service_class": 1,
+    "load_duration_class": "mittel",
+    "objective": "BALANCED_DESIGN"
+  },
+  "recommendation": {
+    "label": "KI-Empfehlung",
+    "plate_count": 2,
+    "plate_thickness_mm": 6.0,
+    "dowel_diameter_mm": 16.0,
+    "rows_parallel": 2,
+    "rows_perpendicular": 3,
+    "fastener_count_per_side": 6,
+    "utilization": 0.8527125217319054,
+    "governing_check": "Verbindungsmittel im Holz"
+  },
+  "optimization": {
+    "evaluatedCount": 4560,
+    "feasibleCount": 413,
+    "rejectedCount": 4147,
+    "shortlistedCount": 12,
+    "selectedVariantRank": 3427,
+    "selectedVariant": "variant-1",
+    "objective": "BALANCED_DESIGN",
+    "message": "4560 Varianten berechnet, davon 413 geeignet."
+  }
+}

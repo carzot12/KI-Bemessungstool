@@ -1,0 +1,293 @@
+KI-Bemessungstool
+Berechnungsbericht - gewählte Variante
+Erstellt: 28.08.2026 00:50
+
+Projekt: test 1
+
+Basis-Randbedingungen
+Aufgabenstellung
+
+Bemessung eines zugbeanspruchten Holz-Holz-Stosses mit innenliegenden Stahlblechen und Stabdübeln
+
+Bemessungslast Ft,d
+
+140 kN
+
+Holzklasse
+
+GL24h
+
+Querschnitt
+
+200 x 240 mm
+
+Nutzungsklasse / Dauer
+
+NK 1 / mittel
+
+Entwurfsziel
+
+Wirtschaftliche Empfehlung
+
+GEOMETRIE UND ABMESSUNGEN
+Bereich
+
+Parameter
+
+Wert
+
+Holzquerschnitt
+
+b/h
+
+200 / 240 mm
+
+Stahlbleche
+
+Anzahl / ts
+
+2 / 5 mm
+
+Stahlbleche
+
+Blechlänge / Blechhöhe
+
+330 / 160 mm
+
+Stahlbleche
+
+Blechlage über b
+
+62.5 / 137.5 mm
+
+Holzaufteilung
+
+t1 / t2
+
+60 / 70 mm
+
+Stabdübel
+
+d / Anordnung
+
+Ø12 mm / 2 x 4
+
+Stabdübel
+
+Anzahl je Stossseite
+
+8
+
+Holzabstände
+
+a1 / a2
+
+60 / 40 mm
+
+Holzabstände
+
+a3,t / a4,c
+
+85 / 60 mm
+
+Tatsächliche Holzränder
+
+oben / unten
+
+60 / 60 mm
+
+Stahlblechrandabstände
+
+e1 / e2
+
+20 / 20 mm
+
+Mindestwerte und angesetzte Werte
+Parameter
+
+Mindestwert
+
+Angesetzt
+
+Status
+
+a1
+
+60 mm
+
+60 mm
+
+ERFÜLLT
+
+a2
+
+36 mm
+
+40 mm
+
+ERFÜLLT
+
+Parameter
+
+Mindestwert
+
+Angesetzt
+
+Status
+
+a3,t
+
+84 mm
+
+85 mm
+
+ERFÜLLT
+
+a4,c
+
+36 mm
+
+60 mm
+
+ERFÜLLT
+
+Für e1 und e2 enthält der aktuelle Rechenkern keine separaten normativen Mindestwerte; sie sind oben
+ausschließlich als angesetzte Stahlblechrandabstände dokumentiert.
+
+ENTWURFSUNTERSUCHUNG
+Entwurfsziel: Wirtschaftliche Empfehlung. Für die vorgegebenen Randbedingungen wurden 4560 Varianten
+untersucht; 413 davon waren technisch geeignet. Für den Vergleich wurden 12 Varianten ausgewählt. Die
+KI-Empfehlung basiert ausschließlich auf diesen deterministisch berechneten Ergebnissen.
+
+KI-Empfehlung
+KI-Empfehlung: 2 Stahlblech(e), ts 6 mm, Ø16 mm, 2 x 3 Stabdübel, η 85.3 %, massgebend
+Verbindungsmittel im Holz. Wirtschaftlich ausgewogene KI-Empfehlung.
+
+Gewählte Konstruktion
+Anschlussaufbau
+
+2 innenliegende Stahlbleche
+
+Blechdicke
+
+5 mm
+
+Holzaufteilung
+
+t1=60 mm, t2=70 mm
+
+Stabdübel
+
+Ø12 mm; 2 x 4 = 8
+
+Maximale Ausnutzung
+
+92.6 %
+
+Maßgebender Nachweis
+
+Verbindungsmittel im Holz
+
+Gesamtstatus
+
+ZULÄSSIG UND ERFÜLLT
+
+Nachweise
+Nachweis
+
+Rd [kN]
+
+Ausnutzung
+
+Status
+
+Seitenholz – Nettoquerschnitt
+
+234.70
+
+59.7 %
+
+erfüllt
+
+Mittelholz – Nettoquerschnitt
+
+338.13
+
+41.4 %
+
+erfüllt
+
+Stahlblech – Zug
+
+279.94
+
+50.0 %
+
+erfüllt
+
+Verbindungsmittel im Stahlblech
+
+260.45
+
+53.8 %
+
+erfüllt
+
+Blockversagen Stahlblech
+
+397.45
+
+35.2 %
+
+erfüllt
+
+Verbindungsmittel im Holz
+
+151.25
+
+92.6 %
+
+erfüllt
+
+Blockscheren im Holz
+
+276.91
+
+50.6 %
+
+erfüllt
+
+KI-Einschätzung
+
+KI-Einschätzung: KI-Empfehlung mit Ø16 mm und 6 Stabdübeln wird empfohlen, weil sie die wirtschaftlich
+ausgewogene Empfehlung des berechneten Variantenraums ist. Die Einschätzung basiert ausschließlich auf
+den berechneten Varianten.
+
+TECHNISCHE ZEICHNUNGEN
+Seitenansicht und Schnitt A-A verwenden exakt dieselbe ConnectionGeometry wie die Geometrietabelle.
+Seitenansicht - tatsächliche Snapshot-Geometrie
+
+a3,t=85 | a1=60 | e1=20 mm
+oben=60 mm
+
+a2=40 mm
+
+unten=60 mm; e2=20 mm
+
+Schnitt A-A
+
+h=240 mm
+
+b=200 mm: 60 | 5 | 70 | 5 | 60
+
+Quellen und Normstellen
+• ÖNORM EN 1995-1-1:2019, Tabelle 8.5
+• ÖNORM EN 1995-1-1:2019, Abschnitt 8.6
+• ÖNORM B 1995-1-1:2023, nationale Ergänzung zu Abschnitt 8.6
+• Geometrische Plausibilität des V1-Eingabemodells
+• calculations/stabduebel.py: getrennte zwei- und vierschnittige Rechenmodelle
+• ÖNORM B 1995-1-1:2023, nationale Ergänzung zu Abschnitt 8.6, Tabelle NA.8.4-E2
+• ÖNORM EN 1995-1-1:2019, Abschnitt 10.4.4
+• calculations/stabduebel.py (anschlussfallabhängige Nachweise)
+
+

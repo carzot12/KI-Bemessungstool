@@ -1,1 +1,3 @@
+-r requirements.txt
+-r requirements-webui.txt
 pyinstaller==6.16.0

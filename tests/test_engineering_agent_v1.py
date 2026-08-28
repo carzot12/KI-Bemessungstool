@@ -147,7 +147,12 @@ def test_optimizer_computes_minimum_spacings_and_validator_checks_geometry() -> 
             assert variant.input.a1_mm == 5.0 * d
             assert variant.input.a2_mm == 3.0 * d
             assert variant.input.a3_t_mm == max(7.0 * d, 80.0)
-            assert variant.input.a4_c_mm == 3.0 * d
+            centered = (
+                variant.input.height_h_mm
+                - (variant.input.rows_perpendicular_m - 1) * variant.input.a2_mm
+            ) / 2.0
+            assert variant.input.a4_c_mm == centered
+            assert variant.input.a4_c_mm >= 3.0 * d
 
 
 def test_user_fixed_geometry_and_plate_are_never_changed() -> None:
@@ -169,6 +174,13 @@ def test_user_fixed_geometry_and_plate_are_never_changed() -> None:
     assert all(item.input.plate_thickness_ts_mm == 6.0 for item in result.evaluated)
     assert all(item.input.side_thickness_t1_mm == 60.0 for item in result.evaluated)
     assert all(item.input.middle_thickness_t2_mm == 68.0 for item in result.evaluated)
+
+
+def test_user_fixed_transverse_edge_distance_is_never_centered_automatically() -> None:
+    base = StabduebelInput(a4_c_mm=52.0)
+    result = optimize_stabduebel(base, fixed_parameters={"a4_c_mm"})
+    assert result.evaluated
+    assert all(item.input.a4_c_mm == 52.0 for item in result.evaluated)
 
 
 def test_macos_keychain_enables_llm_without_environment_key() -> None:

@@ -1,0 +1,267 @@
+KI-Bemessungstool
+Variantenbericht
+Erstellt: 28.08.2026 00:50
+
+Projekt: test 1
+
+Basis-Randbedingungen
+Aufgabenstellung
+
+Bemessung eines zugbeanspruchten Holz-Holz-Stosses mit innenliegenden Stahlblechen und Stabdübeln
+
+Bemessungslast Ft,d
+
+140 kN
+
+Holzklasse
+
+GL24h
+
+Querschnitt
+
+200 x 240 mm
+
+Nutzungsklasse / Dauer
+
+NK 1 / mittel
+
+Entwurfsziel
+
+Wirtschaftliche Empfehlung
+
+GEOMETRIE UND ABMESSUNGEN
+Bereich
+
+Parameter
+
+Wert
+
+Holzquerschnitt
+
+b/h
+
+200 / 240 mm
+
+Stahlbleche
+
+Anzahl / ts
+
+2 / 5 mm
+
+Stahlbleche
+
+Blechlänge / Blechhöhe
+
+330 / 160 mm
+
+Stahlbleche
+
+Blechlage über b
+
+62.5 / 137.5 mm
+
+Holzaufteilung
+
+t1 / t2
+
+60 / 70 mm
+
+Bereich
+
+Parameter
+
+Wert
+
+Stabdübel
+
+d / Anordnung
+
+Ø12 mm / 2 x 4
+
+Stabdübel
+
+Anzahl je Stossseite
+
+8
+
+Holzabstände
+
+a1 / a2
+
+60 / 40 mm
+
+Holzabstände
+
+a3,t / a4,c
+
+85 / 60 mm
+
+Tatsächliche Holzränder
+
+oben / unten
+
+60 / 60 mm
+
+Stahlblechrandabstände
+
+e1 / e2
+
+20 / 20 mm
+
+Mindestwerte und angesetzte Werte
+Parameter
+
+Mindestwert
+
+Angesetzt
+
+Status
+
+a1
+
+60 mm
+
+60 mm
+
+ERFÜLLT
+
+a2
+
+36 mm
+
+40 mm
+
+ERFÜLLT
+
+a3,t
+
+84 mm
+
+85 mm
+
+ERFÜLLT
+
+a4,c
+
+36 mm
+
+60 mm
+
+ERFÜLLT
+
+Für e1 und e2 enthält der aktuelle Rechenkern keine separaten normativen Mindestwerte; sie sind oben ausschließlich als angesetzte Stahlblechrandabstände
+dokumentiert.
+
+ENTWURFSUNTERSUCHUNG
+Entwurfsziel: Wirtschaftliche Empfehlung. Für die vorgegebenen Randbedingungen wurden 4560 Varianten untersucht; 413 davon waren technisch geeignet. Für
+den Vergleich wurden 12 Varianten ausgewählt. Die KI-Empfehlung basiert ausschließlich auf diesen deterministisch berechneten Ergebnissen.
+
+Ausgewählte berechnete Varianten
+
+Variante
+
+Bleche
+
+ts
+
+Ø
+
+nxm
+
+Anzahl
+
+η
+
+Reserve
+
+Maßgebend
+
+Status
+
+KI-Empfehlung
+
+2
+
+6 mm
+
+16 mm
+
+2x3
+
+6
+
+85 %
+
+15 %
+
+Verbindungsmittel im Holz
+
+zulässig
+
+Alternative Ø12
+
+2
+
+5 mm
+
+12 mm
+
+2x4
+
+8
+
+93 %
+
+7%
+
+Verbindungsmittel im Holz
+
+zulässig
+
+Mehr Reserve
+
+2
+
+5 mm
+
+12 mm
+
+4x4
+
+16
+
+55 %
+
+45 %
+
+Seitenholz – Nettoquerschnitt
+
+zulässig
+
+KI-Empfehlung: 2 Stahlblech(e), ts 6 mm, Ø16 mm, 2 x 3 = 6 Stabdübel je Stossseite, η 85.3 %, massgebend Verbindungsmittel im Holz. Wirtschaftlich
+ausgewogene KI-Empfehlung.
+Geometrie: b x h = 200 x 240 mm; Schichten 45 | 6 | 98 | 6 | 45 mm; Blech L x H = 424 x 136 mm; a1/a2/a3,t/a4,c = 80/48/112/48 mm; e1/e2 = 20/20 mm.
+Alternative Ø12: 2 Stahlblech(e), ts 5 mm, Ø12 mm, 2 x 4 = 8 Stabdübel je Stossseite, η 92.6 %, massgebend Verbindungsmittel im Holz. Vergleich mit tatsächlich
+berechnetem Stabdübeldurchmesser Ø12 mm.
+Geometrie: b x h = 200 x 240 mm; Schichten 60 | 5 | 70 | 5 | 60 mm; Blech L x H = 330 x 160 mm; a1/a2/a3,t/a4,c = 60/40/85/60 mm; e1/e2 = 20/20 mm.
+Mehr Reserve: 2 Stahlblech(e), ts 5 mm, Ø12 mm, 4 x 4 = 16 Stabdübel je Stossseite, η 55.0 %, massgebend Seitenholz – Nettoquerschnitt. Mit η = 55.0 % die
+größte Reserve im Vergleich.
+Geometrie: b x h = 200 x 240 mm; Schichten 65 | 5 | 60 | 5 | 65 mm; Blech L x H = 570 x 160 mm; a1/a2/a3,t/a4,c = 60/40/85/60 mm; e1/e2 = 20/20 mm.
+
+KI-gestützte Entwurfsbewertung
+KI-Einschätzung: KI-Empfehlung mit Ø16 mm und 6 Stabdübeln wird empfohlen, weil sie die wirtschaftlich ausgewogene Empfehlung des berechneten
+Variantenraums ist. Die Einschätzung basiert ausschließlich auf den berechneten Varianten.
+Die KI-Bewertung stellt eine Entwurfsempfehlung auf Basis der berechneten Varianten dar. Die technischen Nachweise stammen aus dem deterministischen
+Rechenkern.
+
+Quellen und Normstellen
+• ÖNORM EN 1995-1-1:2019, Tabelle 8.5
+• ÖNORM EN 1995-1-1:2019, Abschnitt 8.6
+• ÖNORM B 1995-1-1:2023, nationale Ergänzung zu Abschnitt 8.6
+• Geometrische Plausibilität des V1-Eingabemodells
+• calculations/stabduebel.py: getrennte zwei- und vierschnittige Rechenmodelle
+• ÖNORM B 1995-1-1:2023, nationale Ergänzung zu Abschnitt 8.6, Tabelle NA.8.4-E2
+• ÖNORM EN 1995-1-1:2019, Abschnitt 10.4.4
+• calculations/stabduebel.py (anschlussfallabhängige Nachweise)
+
+

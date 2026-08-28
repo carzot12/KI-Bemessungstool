@@ -3,9 +3,17 @@ import type { BridgeEnvelope, FormOptions, UISnapshot, Variant } from "./types";
 import SideView from "./visualization/SideView";
 import SectionView from "./visualization/SectionView";
 import IsometricView from "./visualization/IsometricView";
+import TopView from "./visualization/TopView";
 import logoUrl from "../../assets/logo.png";
 
-type View = "Seitenansicht" | "Querschnitt" | "3D";
+window.addEventListener("error", (event) => {
+  console.error("Uncaught frontend error", event.error || event.message);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("Unhandled frontend rejection", event.reason);
+});
+
+type View = "Seitenansicht" | "Draufsicht" | "Schnitt A-A" | "3D";
 type Theme = "light" | "dark";
 
 function Ring({ value }: { value: number }) {
@@ -37,12 +45,14 @@ function Header({
   onTheme,
   mode,
   onMode,
+  onProjectName,
 }: {
   snapshot: UISnapshot;
   theme: Theme;
   onTheme: (theme: Theme) => void;
   mode: string;
   onMode: (mode: string) => void;
+  onProjectName: (name: string) => void;
 }) {
   return (
     <header className="header">
@@ -52,6 +62,9 @@ function Header({
       <div className="product">
         <h1>KI-Bemessungstool</h1>
         <p>KI-gestützte Bemessung von Holzbauverbindungen</p>
+        <input aria-label="Projektname" value={snapshot.projectName || ""} placeholder="Projektname"
+          onChange={(e) => onProjectName(e.target.value)}
+          onBlur={(e) => void window.pywebview?.api.set_project_name({ project_name: e.target.value })} />
       </div>
       <nav className="mode-tabs">
         {["KI Workspace", "Kompakt", "Manuell"].map((label) => (
@@ -119,12 +132,14 @@ function Sidebar({
 function Chat({
   snapshot,
   onSnapshot,
+  onError,
 }: {
   snapshot: UISnapshot;
   onSnapshot: (s: UISnapshot) => void;
+  onError: (message: string) => void;
 }) {
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [follow, setFollow] = useState(true);
   const scroll = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -137,22 +152,39 @@ function Chat({
   const send = async (e?: FormEvent) => {
     e?.preventDefault();
     const value = text.trim();
-    if (!value || busy) return;
+    if (!value || isThinking) return;
     setText("");
-    setBusy(true);
+    const optimisticSnapshot: UISnapshot = {
+      ...snapshot,
+      conversation: [
+        ...snapshot.conversation,
+        { role: "user", content: value },
+      ],
+    };
+    onSnapshot(optimisticSnapshot);
+    setIsThinking(true);
     setFollow(true);
     try {
       if (window.pywebview) {
         const response = await window.pywebview.api.send_message({
           text: value,
         });
-        onSnapshot(response.data);
+        if (!response.ok || !response.data) {
+          const message = response.error || "Die Anfrage konnte nicht verarbeitet werden.";
+          onError(message);
+          onSnapshot({
+            ...optimisticSnapshot,
+            conversation: [
+              ...optimisticSnapshot.conversation,
+              { role: "assistant", content: message },
+            ],
+          });
+        } else onSnapshot(response.data);
       } else
         onSnapshot({
-          ...snapshot,
+          ...optimisticSnapshot,
           conversation: [
-            ...snapshot.conversation,
-            { role: "user", content: value },
+            ...optimisticSnapshot.conversation,
             {
               role: "assistant",
               content:
@@ -160,8 +192,18 @@ function Chat({
             },
           ],
         });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Python-Backend nicht verbunden.";
+      onError(message);
+      onSnapshot({
+        ...optimisticSnapshot,
+        conversation: [
+          ...optimisticSnapshot.conversation,
+          { role: "assistant", content: message },
+        ],
+      });
     } finally {
-      setBusy(false);
+      setIsThinking(false);
     }
   };
   const key = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -198,20 +240,30 @@ function Chat({
       >
         {snapshot.conversation.map((m, i) => (
           <article key={i} className={`message ${m.role}`}>
-            <div className="avatar">{m.role === "user" ? "CZ" : "✦"}</div>
-            <div>
+            <div className="avatar" aria-hidden="true">
+              {m.role === "user" ? (
+                <svg className="user-avatar-icon" viewBox="0 0 24 24">
+                  <circle cx="12" cy="8" r="3.5" />
+                  <path d="M5.5 19c.7-4 3-6 6.5-6s5.8 2 6.5 6" />
+                </svg>
+              ) : "✦"}
+            </div>
+            <div className="message-content">
               <small>{m.role === "user" ? "Sie" : "KI-Assistent"}</small>
               <p>{m.content}</p>
             </div>
           </article>
         ))}
-        {busy && (
+        {isThinking && (
           <article className="message assistant">
             <div className="avatar">✦</div>
-            <div className="thinking">
-              <i />
-              <i />
-              <i /> Analysiere Anfrage …
+            <div className="message-content">
+              <small>KI-Assistent</small>
+              <div className="thinking" aria-label="KI-Assistent verarbeitet die Anfrage">
+                <i />
+                <i />
+                <i />
+              </div>
             </div>
           </article>
         )}
@@ -237,7 +289,7 @@ function Chat({
           onKeyDown={key}
           placeholder="Frag den KI-Assistenten …"
         />
-        <button aria-label="Senden">➤</button>
+        <button aria-label="Senden" disabled={isThinking || !text.trim()}>➤</button>
         <small>Enter senden · Shift+Enter neue Zeile</small>
       </form>
     </section>
@@ -247,19 +299,22 @@ function Chat({
 function Visualizer({
   snapshot,
   modelOverride,
+  previewActive = false,
 }: {
   snapshot: UISnapshot;
   modelOverride?: UISnapshot["visualizationModel"];
+  previewActive?: boolean;
 }) {
   const [view, setView] = useState<View>("Seitenansicht");
   const [dimensions, setDimensions] = useState(true);
-  const model = modelOverride || snapshot.visualizationModel;
+  const model = modelOverride || snapshot.connectionGeometry;
   return (
     <section className="visual card">
       <div className="card-head">
         <h2>
-          Technische Live-Visualisierung{" "}
+          Technische Darstellung{" "}
           {snapshot.demoMode && <em>DEMO-SNAPSHOT</em>}
+          {previewActive && <em>VARIANTENVORSCHAU</em>}
         </h2>
         <label className="toggle">
           Maße{" "}
@@ -272,7 +327,7 @@ function Visualizer({
         </label>
       </div>
       <div className="view-tabs">
-        {(["3D", "Seitenansicht", "Querschnitt"] as View[]).map((v) => (
+        {(["Seitenansicht", "Draufsicht", "Schnitt A-A", "3D"] as View[]).map((v) => (
           <button
             className={view === v ? "active" : ""}
             onClick={() => setView(v)}
@@ -286,15 +341,26 @@ function Visualizer({
         {model ? (
           view === "Seitenansicht" ? (
             <SideView model={model} dimensions={dimensions} />
-          ) : view === "Querschnitt" ? (
+          ) :           view === "Draufsicht" ? (
+            <TopView model={model} dimensions={dimensions} />
+          ) : view === "Schnitt A-A" ? (
             <SectionView model={model} dimensions={dimensions} />
           ) : (
-            <IsometricView model={model} />
+            <IsometricView model={model} dimensions={dimensions} />
           )
         ) : (
           <p>Kein berechneter Entwurf vorhanden.</p>
         )}
       </div>
+      {model && (
+        <div className="visual-specs">
+          <b>{previewActive ? "Vorschau Variante" : "Gewählte Variante / Favorit"}</b>
+          <span>Holzquerschnitt {model.sectionWidthMm} × {model.sectionHeightMm} mm</span>
+          <span>{model.plateCount} Stahlblech{model.plateCount === 1 ? "" : "e"} · ts {model.plateThicknessMm} mm · t1 {model.sideThicknessMm} mm{model.plateCount === 2 ? ` · t2 ${model.middleThicknessMm} mm` : ""}</span>
+          <span>Stabdübel Ø{model.dowelDiameterMm} mm · {model.rowsParallel} × {model.rowsPerpendicular} · {model.rowsParallel * model.rowsPerpendicular} je Stoßseite</span>
+          <span>a1 {model.a1Mm} · a2 {model.a2Mm} · a3,t {model.a3tMm} · a4,c {model.a4cMm} · e1 {model.e1Mm} · e2 {model.e2Mm} mm</span>
+        </div>
+      )}
     </section>
   );
 }
@@ -307,10 +373,16 @@ const value = (input: Record<string, unknown>, ...keys: string[]) => {
 };
 
 function BestSolution({ snapshot }: { snapshot: UISnapshot }) {
-  const r = snapshot.currentResult,
-    m = snapshot.visualizationModel;
-  if (!r || !m) return null;
-  const input = r.input;
+  const recommendation = snapshot.recommendedVariant;
+  if (!recommendation)
+    return (
+      <section className="solution card empty-result">
+        <h2>BESTE LÖSUNG</h2>
+        <p>Noch keine Berechnung vorhanden.</p>
+      </section>
+    );
+  const input = recommendation.input;
+  const m = recommendation.connectionGeometry;
   const rows = [
     ["Anschlussaufbau", `${m.plateCount} innenliegende Stahlbleche`],
     ["Blechdicke", `${m.plateThicknessMm} mm`],
@@ -328,7 +400,8 @@ function BestSolution({ snapshot }: { snapshot: UISnapshot }) {
     ["Lasteinwirkungsdauer", value(input, "load_duration_class")],
     ["kmod", value(input, "k_mod")],
   ];
-  const fulfilled = r.passed && r.normAdmissible;
+  const fulfilled = recommendation.passed && recommendation.normAdmissible;
+  const stats = snapshot.lastOptimization;
   return (
     <section className="solution card result-flash">
       <div className="solution-title">
@@ -349,14 +422,21 @@ function BestSolution({ snapshot }: { snapshot: UISnapshot }) {
           ))}
         </dl>
         <div className="eta">
-          <Ring value={r.utilization} />
+          <Ring value={recommendation.utilization} />
           <p>
             Maßgebend:
             <br />
-            <b>{r.governingCheck}</b>
+            <b>{recommendation.governingCheck}</b>
           </p>
         </div>
       </div>
+      {stats && (
+        <div className="optimization-stats">
+          <span>Varianten untersucht: <b>{stats.evaluatedCount.toLocaleString("de-DE")}</b></span>
+          <span>davon geeignet: <b>{stats.feasibleCount.toLocaleString("de-DE")}</b></span>
+          <span>Entwurfsziel: <b>{stats.objective || "ausgewogene Empfehlung"}</b></span>
+        </div>
+      )}
     </section>
   );
 }
@@ -365,18 +445,21 @@ function Variants({
   snapshot,
   selected,
   onPreview,
+  onAdopt,
 }: {
   snapshot: UISnapshot;
   selected: Variant | null;
   onPreview: (variant: Variant) => void;
+  onAdopt: (variant: Variant) => void;
 }) {
   return (
     <section className="variants card">
       <div className="card-head">
         <h2>WEITERE VARIANTEN</h2>
-        <button>Alle Varianten</button>
+        <button onClick={() => document.querySelector<HTMLElement>(".sidebar button:nth-child(2)")?.click()}>Alle Varianten</button>
       </div>
       <div className="variant-list">
+        {!snapshot.variants.length && <p>Noch keine Varianten berechnet.</p>}
         {snapshot.variants.slice(0, 3).map((v, i) => (
           <article
             key={v.id}
@@ -390,12 +473,13 @@ function Variants({
           >
             <div className="variant-id">{String.fromCharCode(65 + i)}</div>
             <div>
-              <b>{i === 0 ? "Beste Lösung" : v.label}</b>
+              <b>{i === 0 ? "KI-EMPFEHLUNG" : v.label}</b>
               <p>
-                Ø{v.diameterMm} · {v.rowsParallel} × {v.rowsPerpendicular}
+                {v.plateCount} Blech{v.plateCount === 1 ? "" : "e"} · ts {v.plateThicknessMm} mm · Ø{v.diameterMm} · {v.rowsParallel} × {v.rowsPerpendicular}
               </p>
               <small>
-                {v.fastenerCount} Stabdübel{" "}
+                {v.fastenerCount} Stabdübel je Stoßseite · maßgebend: {v.governingCheck}<br />
+                {v.interestReason}{" "}
                 {!v.normAdmissible && "· nicht zulässig"}
               </small>
             </div>
@@ -408,12 +492,150 @@ function Variants({
           {selected ? "Vorschau aktiv" : "Variante für Vorschau wählen"}
         </span>
         <button
-          disabled
-          title="Eine technische Übernahme benötigt eine freigegebene Python-Bridge-Mutation."
+          disabled={!selected}
+          onClick={() => selected && onAdopt(selected)}
         >
-          Übernehmen
+          Als Favorit übernehmen
         </button>
       </div>
+    </section>
+  );
+}
+
+function VariantWorkspace({
+  snapshot,
+  preview,
+  onPreview,
+  onAskAi,
+  onAdopt,
+}: {
+  snapshot: UISnapshot;
+  preview: Variant | null;
+  onPreview: (variant: Variant) => void;
+  onAskAi: () => void;
+  onAdopt: (variant: Variant) => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [showComparison, setShowComparison] = useState(false);
+  const [reportIds, setReportIds] = useState<string[]>(
+    snapshot.reportVariantIds?.length
+      ? snapshot.reportVariantIds
+      : snapshot.variants.length ? [snapshot.variants[0].id] : [],
+  );
+  const selected = snapshot.variants.filter((v) => selectedIds.includes(v.id));
+  const toggle = (id: string) => {
+    const next = reportIds.includes(id)
+      ? reportIds.filter((item) => item !== id)
+      : [...reportIds, id];
+    setReportIds(next);
+    if (window.pywebview) {
+      void window.pywebview.api.set_report_selection({ variant_ids: next });
+    }
+  };
+  return (
+    <section className="section-workspace variants-workspace">
+      <div className="section-head">
+        <div><h1>Varianten</h1><p>Kuratierte, tatsächlich berechnete Lösungen</p></div>
+        <div className="section-actions">
+          <button disabled={selected.length < 2} onClick={() => setShowComparison(true)}>VARIANTEN VERGLEICHEN</button>
+          <button disabled={!selected.length} onClick={onAskAi}>KI BEWERTEN LASSEN</button>
+        </div>
+      </div>
+      {!snapshot.variants.length ? (
+        <div className="card section-empty">Noch keine Varianten berechnet.</div>
+      ) : (
+        <>
+          <div className="variant-catalog">
+            {snapshot.variants.map((v) => (
+              <article className="card" key={v.id} onClick={() => onPreview(v)}>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(v.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => setSelectedIds((ids) =>
+                    ids.includes(v.id) ? ids.filter((item) => item !== v.id) : [...ids, v.id],
+                  )}
+                  aria-label={`${v.label} auswählen`}
+                />
+                <label onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={reportIds.includes(v.id)} onChange={() => toggle(v.id)} /> Im Bericht aufnehmen</label>
+                <div><h2>{v.label}{snapshot.currentVariant?.id === v.id ? " · FAVORIT" : ""}</h2><p>{v.plateCount} Blech(e) · ts {v.plateThicknessMm} mm · Ø{v.diameterMm} mm</p></div>
+                <dl>
+                  <div><dt>Anordnung</dt><dd>{v.rowsParallel} × {v.rowsPerpendicular} = {v.fastenerCount}</dd></div>
+                  <div><dt>Ausnutzung</dt><dd>{(v.utilization * 100).toFixed(0)} %</dd></div>
+                  <div><dt>Reserve</dt><dd>{(v.reserve * 100).toFixed(0)} %</dd></div>
+                  <div><dt>Maßgebend</dt><dd>{v.governingCheck}</dd></div>
+                  <div><dt>Einordnung</dt><dd>{v.interestReason}</dd></div>
+                </dl>
+                <strong className={v.passed && v.normAdmissible ? "status-ok" : "status-bad"}>
+                  {v.passed && v.normAdmissible ? "✓ zulässig und erfüllt" : "✕ nicht zulässig/erfüllt"}
+                </strong>
+              </article>
+            ))}
+          </div>
+          {preview && (
+            <div className="card variant-detail">
+              <h2>VARIANTENVORSCHAU · {preview.label}</h2>
+              <p>
+                {preview.plateCount} Blech(e) · ts {preview.plateThicknessMm} mm · Ø{preview.diameterMm} mm · {preview.rowsParallel} × {preview.rowsPerpendicular} = {preview.fastenerCount} Stabdübel
+              </p>
+              <p>η = {(preview.utilization * 100).toFixed(1)} % · Reserve {(preview.reserve * 100).toFixed(1)} % · maßgebend: {preview.governingCheck}</p>
+              <button onClick={() => onAdopt(preview)}>Als Favorit übernehmen</button>
+            </div>
+          )}
+          {showComparison && selected.length > 1 && (
+            <div className="card comparison">
+              <h2>VARIANTENVERGLEICH</h2>
+              <div className="comparison-scroll"><table><thead><tr>
+                <th>Variante</th><th>Bleche</th><th>ts</th><th>Ø</th><th>Anordnung</th><th>Anzahl</th><th>η</th><th>Reserve</th><th>Maßgebend</th><th>Status</th>
+              </tr></thead><tbody>{selected.map((v) => <tr key={v.id}>
+                <td>{v.label}</td><td>{v.plateCount}</td><td>{v.plateThicknessMm} mm</td><td>{v.diameterMm} mm</td><td>{v.rowsParallel} × {v.rowsPerpendicular}</td><td>{v.fastenerCount}</td><td>{(v.utilization * 100).toFixed(0)} %</td><td>{(v.reserve * 100).toFixed(0)} %</td><td>{v.governingCheck}</td><td>{v.passed && v.normAdmissible ? "erfüllt" : "nicht erfüllt"}</td>
+              </tr>)}</tbody></table></div>
+              <h2>KI-EINSCHÄTZUNG</h2><p>{snapshot.recommendation}</p>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function SourcesWorkspace({ snapshot }: { snapshot: UISnapshot }) {
+  return (
+    <section className="section-workspace">
+      <div className="section-head"><div><h1>Quellen</h1><p>Für den aktuellen Entwurf verwendete Referenzen</p></div></div>
+      <div className="card source-list">
+        {snapshot.sources.length ? snapshot.sources.map((source) => <p key={source}>{source}</p>) : <p>Noch keine berechnungsspezifischen Quellen vorhanden.</p>}
+      </div>
+    </section>
+  );
+}
+
+function ChecksWorkspace({ snapshot }: { snapshot: UISnapshot }) {
+  const result = snapshot.currentResult;
+  const checks = (result?.checks || []) as Array<{ name: string; resistance_kn: number; utilization: number; passed: boolean }>;
+  return <section className="section-workspace"><div className="section-head"><div><h1>Nachweise</h1><p>Deterministische Ergebnisse der aktuellen Variante</p></div></div>
+    <div className="card"><table><thead><tr><th>Nachweis</th><th>Einwirkung</th><th>Widerstand</th><th>Ausnutzung</th><th>Status</th></tr></thead>
+      <tbody>{checks.length ? checks.map((item) => {
+        return <tr key={item.name} className={item.name === result?.governingCheck ? "governing" : ""}><td>{item.name}</td><td>Ft,d</td><td>{item.resistance_kn.toFixed(2)} kN</td><td>{(item.utilization * 100).toFixed(1)} %</td><td>{item.passed ? "erfüllt" : "nicht erfüllt"}</td></tr>;
+      }) : <tr><td colSpan={5}>Noch keine Berechnung vorhanden.</td></tr>}</tbody></table></div>
+  </section>;
+}
+
+function ReportWorkspace({
+  snapshot,
+  onReport,
+}: {
+  snapshot: UISnapshot;
+  onReport: (type: "calculation" | "variants") => void;
+}) {
+  return (
+    <section className="section-workspace">
+      <div className="section-head"><div><h1>Bericht</h1><p>Nachvollziehbare Ausgabe der berechneten Ergebnisse</p></div></div>
+      <div className="report-grid">
+        <article className="card"><h2>Berechnungsbericht</h2><p>Gewählte Variante, Eingaben, Nachweise, Status und Quellen.</p><button disabled={!snapshot.currentResult} onClick={() => onReport("calculation")}>PDF ERSTELLEN</button></article>
+        <article className="card"><h2>Variantenbericht</h2><p>Kuratierte Varianten, Vergleich und gekennzeichnete KI-Einschätzung.</p><button disabled={!snapshot.variants.length} onClick={() => onReport("variants")}>PDF ERSTELLEN</button></article>
+      </div>
+      {snapshot.currentResult && <div className="card report-assessment"><h2>KI-EINSCHÄTZUNG</h2><p>{snapshot.recommendation}</p></div>}
     </section>
   );
 }
@@ -475,42 +697,41 @@ function CompactView({
   options: FormOptions;
   onSnapshot: (s: UISnapshot) => void;
 }) {
-  const input =
-    snapshot.currentResult?.input ||
-    snapshot.technicalState ||
-    options.manualDefaults;
+  const input = snapshot.currentResult?.input || snapshot.technicalState;
   const [form, setForm] = useState<Record<string, string>>(() => ({
-    force_ed_kn: String(input.force_ed_kn ?? 140),
-    timber_grade: String(input.timber_grade ?? "GL24h"),
-    width_b_mm: String(input.width_b_mm ?? 200),
-    height_h_mm: String(input.height_h_mm ?? 240),
-    service_class: String(input.service_class ?? 1),
-    load_duration_class: String(input.load_duration_class ?? "mittel"),
-    objective: "BALANCED_DESIGN",
+    project_name: String(input.project_name ?? ""),
+    force_ed_kn: String(input.force_ed_kn ?? ""),
+    timber_grade: String(input.timber_grade ?? ""),
+    width_b_mm: String(input.width_b_mm ?? ""),
+    height_h_mm: String(input.height_h_mm ?? ""),
+    service_class: String(input.service_class ?? ""),
+    load_duration_class: String(input.load_duration_class ?? ""),
+    objective: "",
   }));
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     setForm((current) => ({
       ...current,
-      force_ed_kn: String(input.force_ed_kn ?? current.force_ed_kn),
-      timber_grade: String(input.timber_grade ?? current.timber_grade),
-      width_b_mm: String(input.width_b_mm ?? current.width_b_mm),
-      height_h_mm: String(input.height_h_mm ?? current.height_h_mm),
-      service_class: String(input.service_class ?? current.service_class),
-      load_duration_class: String(
-        input.load_duration_class ?? current.load_duration_class,
-      ),
+      force_ed_kn: String(input.force_ed_kn ?? ""),
+      project_name: String(input.project_name ?? ""),
+      timber_grade: String(input.timber_grade ?? ""),
+      width_b_mm: String(input.width_b_mm ?? ""),
+      height_h_mm: String(input.height_h_mm ?? ""),
+      service_class: String(input.service_class ?? ""),
+      load_duration_class: String(input.load_duration_class ?? ""),
+      objective: Object.keys(input).length ? current.objective : "",
     }));
   }, [input.force_ed_kn, input.timber_grade, input.width_b_mm,
       input.height_h_mm, input.service_class, input.load_duration_class]);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!window.pywebview) return;
+    if (!window.pywebview) { window.alert("Python-Backend nicht verbunden."); return; }
     setBusy(true);
     try {
       const r = await window.pywebview.api.compact_calculate(form);
-      onSnapshot(r.data);
+      if (!r.ok || !r.data) window.alert(r.error || "Die Berechnung konnte nicht durchgeführt werden.");
+      else onSnapshot(r.data);
     } finally {
       setBusy(false);
     }
@@ -521,9 +742,14 @@ function CompactView({
         <h1>Zuglaschenstoß</h1>
         <p>Schnelle KI-gestützte Vorbemessung</p>
         <label>
+          Projektname
+          <input value={form.project_name} onChange={(e) => set("project_name", e.target.value)} />
+        </label>
+        <label>
           Bemessungslast Ft,d [kN]
           <input
             type="number"
+            required
             value={form.force_ed_kn}
             onChange={(e) => set("force_ed_kn", e.target.value)}
           />
@@ -531,9 +757,11 @@ function CompactView({
         <label>
           Holzklasse
           <select
+            required
             value={form.timber_grade}
             onChange={(e) => set("timber_grade", e.target.value)}
           >
+            <option value="">Bitte auswählen</option>
             {options.timberGrades.map((v) => (
               <option key={v}>{v}</option>
             ))}
@@ -544,6 +772,7 @@ function CompactView({
             Breite b [mm]
             <input
               type="number"
+              required
               value={form.width_b_mm}
               onChange={(e) => set("width_b_mm", e.target.value)}
             />
@@ -552,6 +781,7 @@ function CompactView({
             Höhe h [mm]
             <input
               type="number"
+              required
               value={form.height_h_mm}
               onChange={(e) => set("height_h_mm", e.target.value)}
             />
@@ -560,9 +790,11 @@ function CompactView({
         <label>
           Nutzungsklasse
           <select
+            required
             value={form.service_class}
             onChange={(e) => set("service_class", e.target.value)}
           >
+            <option value="">Bitte auswählen</option>
             {["1", "2", "3"].map((v) => (
               <option key={v}>{v}</option>
             ))}
@@ -571,9 +803,11 @@ function CompactView({
         <label>
           Lasteinwirkungsdauer
           <select
+            required
             value={form.load_duration_class}
             onChange={(e) => set("load_duration_class", e.target.value)}
           >
+            <option value="">Bitte auswählen</option>
             {options.loadDurations.map((v) => (
               <option key={v}>{v}</option>
             ))}
@@ -582,14 +816,17 @@ function CompactView({
         <label>
           Entwurfsziel
           <select
+            required
             value={form.objective}
             onChange={(e) => set("objective", e.target.value)}
           >
+            <option value="">Bitte auswählen</option>
             <option value="BALANCED_DESIGN">Empfehlung / wirtschaftlich</option>
             <option value="MIN_FASTENER_COUNT">wenig Stabdübel</option>
             <option value="LOWER_UTILIZATION">mehr Reserve</option>
             <option value="COMPACT_GEOMETRY">kompakte Geometrie</option>
             <option value="MAXIMIZE_UTILIZATION">maximal ausnutzen</option>
+            <option value="CUSTOM">Benutzerdefiniert</option>
           </select>
         </label>
         <button className="primary-action" disabled={busy}>
@@ -608,13 +845,14 @@ function ManualView({
   snapshot,
   options,
   onSnapshot,
+  onOptimize,
 }: {
   snapshot: UISnapshot;
   options: FormOptions;
   onSnapshot: (s: UISnapshot) => void;
+  onOptimize: () => void;
 }) {
   const source = {
-    ...options.manualDefaults,
     ...snapshot.technicalState,
     ...(snapshot.currentResult?.input || {}),
   };
@@ -625,7 +863,6 @@ function ManualView({
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   useEffect(() => {
     const next = {
-      ...options.manualDefaults,
       ...snapshot.technicalState,
       ...(snapshot.currentResult?.input || {}),
     };
@@ -635,7 +872,7 @@ function ManualView({
   }, [snapshot.currentResult, snapshot.technicalState, options.manualDefaults]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!window.pywebview) return;
+    if (!window.pywebview) { window.alert("Python-Backend nicht verbunden."); return; }
     setBusy(true);
     try {
       const numeric = new Set<string>(
@@ -648,7 +885,8 @@ function ManualView({
       payload.service_class = Number(form.service_class);
       payload.load_duration_class = form.load_duration_class;
       const r = await window.pywebview.api.manual_calculate(payload);
-      onSnapshot(r.data);
+      if (!r.ok || !r.data) window.alert(r.error || "Der Nachweis konnte nicht berechnet werden.");
+      else onSnapshot(r.data);
     } finally {
       setBusy(false);
     }
@@ -656,14 +894,33 @@ function ManualView({
   return (
     <main className="form-workspace manual-view">
       <form className="entry-card card manual-form" onSubmit={submit}>
-        <h1>Eingabedaten</h1>
+        <div className="form-title-row">
+          <div><h1>Eingabedaten</h1><p>Vollständige manuelle Bemessung</p></div>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!window.pywebview) { window.alert("Python-Backend nicht verbunden."); return; }
+              try {
+                const example = await window.pywebview.api.manual_example();
+                if (!example.ok) window.alert(example.error || "Beispieldaten konnten nicht geladen werden.");
+                else setForm(Object.fromEntries(Object.entries(example.data).map(([k, v]) => [k, String(v)])));
+              } catch (error) {
+                window.alert(error instanceof Error ? error.message : "Beispieldaten konnten nicht geladen werden.");
+              }
+            }}
+          >
+            BEISPIEL LADEN
+          </button>
+        </div>
         <div className="manual-grid">
           <label>
             Holzfestigkeitsklasse
             <select
+              required
               value={form.timber_grade}
               onChange={(e) => set("timber_grade", e.target.value)}
             >
+              <option value="">Bitte auswählen</option>
               {options.timberGrades.map((v) => (
                 <option key={v}>{v}</option>
               ))}
@@ -672,9 +929,11 @@ function ManualView({
           <label>
             Nutzungsklasse
             <select
+              required
               value={form.service_class}
               onChange={(e) => set("service_class", e.target.value)}
             >
+              <option value="">Bitte auswählen</option>
               {["1", "2", "3"].map((v) => (
                 <option key={v}>{v}</option>
               ))}
@@ -683,9 +942,11 @@ function ManualView({
           <label>
             Lasteinwirkungsdauer
             <select
+              required
               value={form.load_duration_class}
               onChange={(e) => set("load_duration_class", e.target.value)}
             >
+              <option value="">Bitte auswählen</option>
               {options.loadDurations.map((v) => (
                 <option key={v}>{v}</option>
               ))}
@@ -697,6 +958,7 @@ function ManualView({
               <input
                 type={type}
                 step="any"
+                required
                 value={form[key] ?? ""}
                 onChange={(e) => set(key, e.target.value)}
               />
@@ -706,6 +968,11 @@ function ManualView({
         <button className="primary-action" disabled={busy}>
           {busy ? "BERECHNUNG LÄUFT …" : "NACHWEIS BERECHNEN"}
         </button>
+        {snapshot.currentResult && (
+          <button type="button" onClick={onOptimize} disabled={busy}>
+            KI OPTIMIEREN LASSEN
+          </button>
+        )}
       </form>
       <div className="form-output">
         <Visualizer snapshot={snapshot} />
@@ -720,10 +987,51 @@ function App() {
   const [active, setActive] = useState("Entwurf");
   const [selected, setSelected] = useState<Variant | null>(null);
   const [mode, setMode] = useState("KI Workspace");
+  const [error, setError] = useState<string | null>(null);
+  const [lastPdf, setLastPdf] = useState<string | null>(null);
   const [options, setOptions] = useState<FormOptions | null>(null);
-  const [theme, setTheme] = useState<Theme>(() =>
-    localStorage.getItem("ki-tool-theme") === "dark" ? "dark" : "light",
-  );
+  const [theme, setTheme] = useState<Theme>(() => {
+    const initialTheme =
+      localStorage.getItem("ki-tool-theme") === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = initialTheme;
+    return initialTheme;
+  });
+  const updateSnapshot = (next: UISnapshot) => {
+    setSnapshot(next);
+    setSelected(null);
+  };
+  const resetDesign = async () => {
+    if (!window.pywebview) { setError("Python-Backend nicht verbunden."); return; }
+    if (!window.confirm("Neuen Entwurf starten?")) return;
+    const result = await window.pywebview.api.reset_design();
+    if (!result.ok || !result.data) setError(result.error || "Neuer Entwurf konnte nicht gestartet werden.");
+    else { updateSnapshot(result.data); setActive("Entwurf"); setLastPdf(null); }
+  };
+  const createReport = async (type: "calculation" | "variants") => {
+    if (!window.pywebview) { setError("Python-Backend nicht verbunden."); return; }
+    try {
+      const result = await window.pywebview.api.create_pdf_report({ type });
+      if (result.status === "cancelled") return;
+      if (result.status === "error") setError(result.message || "Der Bericht konnte nicht erstellt werden.");
+      else if (result.path) { setError(null); setLastPdf(result.path); }
+    } catch (e) { setError(e instanceof Error ? e.message : "Der Bericht konnte nicht erstellt werden."); }
+  };
+  const adoptVariant = async (variant: Variant) => {
+    if (!window.pywebview) { setError("Python-Backend nicht verbunden."); return; }
+    const result = await window.pywebview.api.adopt_variant({ variant_id: variant.id });
+    if (!result.ok || !result.data) setError(result.error || "Variante konnte nicht übernommen werden.");
+    else updateSnapshot(result.data);
+  };
+  const askVariantAssessment = async () => {
+    if (!window.pywebview) { setError("Python-Backend nicht verbunden."); return; }
+    try {
+      const result = await window.pywebview.api.send_message({
+        text: "Bewerte die aktuell angezeigten berechneten Varianten und empfehle mir eine davon kurz.",
+      });
+      if (!result.ok || !result.data) setError(result.error || "Die Variantenbewertung ist fehlgeschlagen.");
+      else updateSnapshot(result.data);
+    } catch (error) { setError(error instanceof Error ? error.message : "Die Variantenbewertung ist fehlgeschlagen."); }
+  };
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("ki-tool-theme", theme);
@@ -741,7 +1049,15 @@ function App() {
           result = await fetch("./demo-snapshot.json").then((r) => r.json());
         else return false;
         if (!cancelled) {
-          setSnapshot(result.data);
+          const data = {
+            ...result.data,
+            projectName: result.data.projectName || String(result.data.currentResult?.input?.project_name || ""),
+            reportVariantIds: result.data.reportVariantIds || [],
+            variants: result.data.variants || [],
+            sources: result.data.sources || [],
+            conversation: result.data.conversation || [],
+          };
+          setSnapshot(data);
           if (window.pywebview)
             setOptions(await window.pywebview.api.form_options());
           else
@@ -776,11 +1092,15 @@ function App() {
       window.removeEventListener("pywebviewready", ready);
     };
   }, []);
+  useEffect(() => {
+    if (snapshot && options) {
+      (window as Window & { __KI_APP_READY__?: boolean }).__KI_APP_READY__ = true;
+    }
+  }, [snapshot, options]);
   if (!snapshot)
     return (
-      <main className="loading">
-        <div>✦</div>
-        <h1>Engineering Workspace wird geladen …</h1>
+      <main className="loading" aria-label="Anwendung wird initialisiert">
+        <span>Initialisierung …</span>
       </main>
     );
   return (
@@ -791,21 +1111,26 @@ function App() {
         onTheme={setTheme}
         mode={mode}
         onMode={setMode}
+        onProjectName={(name) =>
+          setSnapshot((current) => current ? { ...current, projectName: name } : current)
+        }
       />
       <Sidebar active={active} setActive={setActive} />
       {mode === "KI Workspace" && (
         <>
+          {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(null)}>Schließen</button></div>}
+          {lastPdf && <div className="success-banner">PDF erstellt: {lastPdf} <button onClick={() => window.pywebview?.api.open_report({ path: lastPdf })}>PDF ÖFFNEN</button><button onClick={() => window.pywebview?.api.reveal_report({ path: lastPdf })}>IM FINDER ZEIGEN</button></div>}
           <Chat
             snapshot={snapshot}
-            onSnapshot={(s) => {
-              setSnapshot(s);
-              setSelected(null);
-            }}
+            onSnapshot={updateSnapshot}
+            onError={setError}
           />
-          <main className="workspace">
+          {active === "Nachweise" && <ChecksWorkspace snapshot={snapshot} />}
+          {active === "Entwurf" && <main className="workspace">
             <Visualizer
               snapshot={snapshot}
-              modelOverride={selected?.visualizationModel}
+              modelOverride={selected?.connectionGeometry}
+              previewActive={Boolean(selected)}
             />
             <div className="results-grid">
               <BestSolution snapshot={snapshot} />
@@ -813,43 +1138,42 @@ function App() {
                 snapshot={snapshot}
                 selected={selected}
                 onPreview={setSelected}
+                onAdopt={adoptVariant}
               />
               <section className="why card">
-                <h2>WARUM DIESE VARIANTE?</h2>
-                <p>
-                  Die Bewertung wird ausschließlich aus dem aktuellen
-                  Python-Ergebnis und den tatsächlich untersuchten Varianten
-                  aufgebaut.
-                </p>
-                <button>Details anzeigen</button>
+                <h2>KI-EINSCHÄTZUNG</h2>
+                <p>{snapshot.recommendation}</p>
               </section>
               <section className="sources card">
                 <h2>QUELLEN</h2>
-                <p>ÖNORM EN 1995-1-1</p>
-                <p>ÖNORM B 1995-1-1</p>
-                <p>IHBV Holzbau-Kompakt</p>
+                {snapshot.sources.length ? snapshot.sources.slice(0, 3).map((source) => <p key={source}>{source}</p>) : <p>Noch keine berechnungsspezifischen Quellen.</p>}
               </section>
             </div>
-          </main>
+          </main>}
+          {active === "Varianten" && <VariantWorkspace snapshot={snapshot} preview={selected} onPreview={setSelected} onAskAi={askVariantAssessment} onAdopt={adoptVariant} />}
+          {active === "Quellen" && <SourcesWorkspace snapshot={snapshot} />}
+          {active === "Bericht" && <ReportWorkspace snapshot={snapshot} onReport={createReport} />}
         </>
       )}
       {mode === "Kompakt" && options && (
         <CompactView
           snapshot={snapshot}
           options={options}
-          onSnapshot={(s) => {
-            setSnapshot(s);
-            setSelected(null);
-          }}
+          onSnapshot={updateSnapshot}
         />
       )}
       {mode === "Manuell" && options && (
         <ManualView
           snapshot={snapshot}
           options={options}
-          onSnapshot={(s) => {
-            setSnapshot(s);
-            setSelected(null);
+          onSnapshot={updateSnapshot}
+          onOptimize={async () => {
+            if (!window.pywebview) { setError("Python-Backend nicht verbunden."); return; }
+            const result = await window.pywebview.api.send_message({
+              text: "Optimiere den aktuellen manuellen Entwurf.",
+            });
+            if (!result.ok || !result.data) setError(result.error || "Die Optimierung ist fehlgeschlagen.");
+            else updateSnapshot(result.data);
           }}
         />
       )}
@@ -863,7 +1187,8 @@ function App() {
         <span>
           ● Engineering-Kern <b>aktiv</b>
         </span>
-        <button disabled>PDF-Bericht erstellen</button>
+        <button className="reset-action" onClick={resetDesign}>Neuer Entwurf</button>
+        <button disabled={!snapshot.currentResult} onClick={() => createReport("calculation")}>PDF-Bericht erstellen</button>
       </div>
     </div>
   );

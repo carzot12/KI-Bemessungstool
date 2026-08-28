@@ -1,0 +1,101 @@
+                                     KI-Bemessungstool
+Berechnungsbericht - gewählte Variante
+Erstellt: 28.08.2026 00:39
+
+Projekt: Zugstoß – 4-schnittiger Stabdübelanschluss
+
+
+Basis-Randbedingungen
+ Aufgabenstellung           Bemessung eines zugbeanspruchten Holz-Holz-Stosses mit innenliegenden Stahlblechen und Stabdübeln
+
+ Bemessungslast Ft,d        140 kN
+
+ Holzklasse                 GL24h
+
+ Querschnitt                200 x 240 mm
+
+ Nutzungsklasse / Dauer     NK 1 / mittel
+
+ Entwurfsziel               Wirtschaftliche Empfehlung
+
+
+
+
+Eingangsparameter und technische Geometrie
+ Stahlbleche / Dicke ts   2 / 5 mm
+
+ Holzschichten            t1 = 60 mm; t2 = 70 mm
+
+ Stabdübel / Bohrung      Ø12 / Ø13 mm
+
+ Anordnung                2 x 4 = 8 je Stossseite
+
+ Abstände                 a1=60; a2=40; a3,t=85; a4,c=60; e1=20; e2=20 mm
+
+
+
+
+ENTWURFSUNTERSUCHUNG
+Entwurfsziel: Wirtschaftliche Empfehlung. Für die vorgegebenen Randbedingungen wurden 4560 Varianten
+untersucht; 413 davon waren technisch geeignet. Für den Vergleich wurden 12 Varianten ausgewählt. Die
+KI-Empfehlung basiert ausschließlich auf diesen deterministisch berechneten Ergebnissen.
+
+
+
+KI-Empfehlung
+KI-Empfehlung: 2 Stahlblech(e), ts 6 mm, Ø16 mm, 2 x 3 Stabdübel, η 85.3 %, massgebend
+Verbindungsmittel im Holz. Wirtschaftlich ausgewogene KI-Empfehlung.
+
+
+
+Gewählte Konstruktion
+ Anschlussaufbau             2 innenliegende Stahlbleche
+
+ Blechdicke                  5 mm
+
+ Holzaufteilung              t1=60 mm, t2=70 mm
+ Stabdübel                   Ø12 mm; 2 x 4 = 8
+
+ Maximale Ausnutzung         92.6 %
+
+ Maßgebender Nachweis        Verbindungsmittel im Holz
+
+ Gesamtstatus                ZULÄSSIG UND ERFÜLLT
+
+
+
+
+Nachweise
+ Nachweis                             Rd [kN]    Ausnutzung   Status
+
+ Seitenholz – Nettoquerschnitt        234.70     59.7 %       erfüllt
+
+ Mittelholz – Nettoquerschnitt        338.13     41.4 %       erfüllt
+
+ Stahlblech – Zug                     279.94     50.0 %       erfüllt
+
+ Verbindungsmittel im Stahlblech      260.45     53.8 %       erfüllt
+
+ Blockversagen Stahlblech             397.45     35.2 %       erfüllt
+
+ Verbindungsmittel im Holz            151.25     92.6 %       erfüllt
+
+ Blockscheren im Holz                 276.91     50.6 %       erfüllt
+
+
+
+
+KI-Einschätzung
+KI-Einschätzung: KI-Empfehlung mit Ø16 mm und 6 Stabdübeln wird empfohlen, weil sie die wirtschaftlich
+ausgewogene Empfehlung des berechneten Variantenraums ist. Die Einschätzung basiert ausschließlich auf
+den berechneten Varianten.
+Quellen und Normstellen
+• ÖNORM EN 1995-1-1:2019, Tabelle 8.5
+• ÖNORM EN 1995-1-1:2019, Abschnitt 8.6
+• ÖNORM B 1995-1-1:2023, nationale Ergänzung zu Abschnitt 8.6
+• Geometrische Plausibilität des V1-Eingabemodells
+• calculations/stabduebel.py: getrennte zwei- und vierschnittige Rechenmodelle
+• ÖNORM B 1995-1-1:2023, nationale Ergänzung zu Abschnitt 8.6, Tabelle NA.8.4-E2
+• ÖNORM EN 1995-1-1:2019, Abschnitt 10.4.4
+• calculations/stabduebel.py (anschlussfallabhängige Nachweise)
+

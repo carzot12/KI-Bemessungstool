@@ -3,11 +3,53 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <title>KI-Bemessungstool</title>
+    <script>
+      document.documentElement.dataset.theme =
+        localStorage.getItem("ki-tool-theme") === "dark" ? "dark" : "light";
+    </script>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #f3f4f6; }
+      [data-theme="dark"] body { background: #080d13; }
+      .pre-react-splash {
+        height: 100%; display: grid; place-content: center; text-align: center;
+        color: #20242a; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      [data-theme="dark"] .pre-react-splash { color: #f4f6f8; }
+      .pre-react-splash section {
+        width: 496px; padding: 48px 72px 46px; border: 1px solid #d9dee5;
+        border-radius: 18px; background: #fff;
+        box-shadow: 0 8px 24px rgba(20, 30, 45, .07);
+      }
+      [data-theme="dark"] .pre-react-splash section {
+        border-color: rgba(255,255,255,.1); background: #111820;
+      }
+      .pre-react-splash img { width: 390px; height: 76px; object-fit: contain; }
+      .pre-react-splash h1 { margin: 24px 0 0; font-size: 27px; }
+      .pre-react-splash p, .pre-react-splash span { color: #6b7280; }
+      .pre-react-splash p { margin: 6px 0 28px; font-size: 14px; }
+      .pre-react-splash span { display: block; margin-bottom: 11px; font-size: 12px; }
+      .pre-react-splash i {
+        display: block; width: 400px; height: 8px; border-radius: 999px;
+        background: #b20d30; animation: pre-pulse 1.15s ease-in-out infinite;
+      }
+      @keyframes pre-pulse { 50% { opacity: .35; transform: scaleX(.55); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="pre-react-splash">
+        <section>
+          <img src="../assets/logo.png" alt="holz.bau forschungs gmbh" />
+          <h1>KI-Bemessungstool</h1>
+          <p>KI-gestützte Bemessung von Holzbauverbindungen</p>
+          <span>KI-Bemessungstool wird gestartet …</span>
+          <i></i>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
