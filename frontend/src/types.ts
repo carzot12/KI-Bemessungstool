@@ -94,6 +94,9 @@ export interface UISnapshot {
     label: string;
     model: string | null;
     detail: string;
+    provider: "local" | "openai";
+    available: boolean;
+    privacyDetail: string;
   };
   conversation: ConversationMessage[];
   visualizationModel: VisualizationModel | null;
@@ -123,6 +126,7 @@ declare global {
         send_message(payload: { text: string }): Promise<BridgeEnvelope>;
         copy_chat_text(): Promise<string>;
         form_options(): Promise<FormOptions>;
+        set_llm_provider(payload: { provider: "local" | "openai" }): Promise<BridgeEnvelope>;
         compact_calculate(
           payload: Record<string, string | number>,
         ): Promise<BridgeEnvelope>;

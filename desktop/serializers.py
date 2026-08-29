@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from ai.assistant import MODEL, StabduebelAssistant
+from ai.assistant import MODEL, OLLAMA_MODEL, StabduebelAssistant
 from ai.optimizer import curated_feasible_variants, ranked_feasible_variants
 from calculations.oenorm_validation import validate_oenorm
 from calculations.stabduebel import StabduebelInput, StabduebelResult, calculate_stabduebel
@@ -395,21 +395,36 @@ def serialize_snapshot(
         for check in validate_oenorm(current.input, current).checks:
             if check.source not in sources:
                 sources.append(check.source)
+    provider = assistant.llm_provider
+    available = assistant.provider_available(provider)
     if assistant.llm_status == "ONLINE":
         agent_status = {
-            "mode": "online", "label": "KI ONLINE", "model": MODEL,
-            "detail": "LLM-first Agent verbunden",
+            "mode": "online", "label": "KI ONLINE",
+            "model": OLLAMA_MODEL if provider == "local" else MODEL,
+            "detail": "Ollama verbunden" if provider == "local" else "OpenAI konfiguriert",
         }
     elif assistant.llm_status == "ERROR":
         agent_status = {
-            "mode": "error", "label": "KI FEHLER", "model": MODEL,
+            "mode": "error", "label": "KI FEHLER",
+            "model": OLLAMA_MODEL if provider == "local" else MODEL,
             "detail": assistant.llm_error or "LLM-Verbindung fehlgeschlagen",
         }
     else:
         agent_status = {
-            "mode": "local", "label": "LOKALER MODUS", "model": None,
-            "detail": "Freie KI-Unterhaltung eingeschränkt",
+            "mode": "local", "label": "LOKAL" if provider == "local" else "OPENAI",
+            "model": OLLAMA_MODEL if provider == "local" else MODEL,
+            "detail": (
+                "Ollama verbunden" if available and provider == "local"
+                else "Ollama nicht erreichbar" if provider == "local"
+                else "OpenAI konfiguriert" if available
+                else "OpenAI API-Key fehlt"
+            ),
         }
+    agent_status.update({
+        "provider": provider,
+        "available": available,
+        "privacyDetail": "Daten bleiben auf diesem Gerät" if provider == "local" else "Cloud-KI optional",
+    })
     return {
         "technicalState": dict(assistant.state.parameters),
         "currentResult": _result(current),

@@ -142,8 +142,11 @@ def test_agent_error_status_is_not_reported_as_online() -> None:
     assert status == {
         "mode": "error",
         "label": "KI FEHLER",
-        "model": "gpt-5-mini",
+        "model": "qwen3:8b",
         "detail": "Connectivity-Test fehlgeschlagen",
+        "provider": "local",
+        "available": True,
+        "privacyDetail": "Daten bleiben auf diesem Gerät",
     }
 
 

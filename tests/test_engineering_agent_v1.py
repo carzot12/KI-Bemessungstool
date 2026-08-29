@@ -1,11 +1,26 @@
 from unittest.mock import patch
 
+import pytest
+
 from ai.assistant import ParameterCategory, StabduebelAssistant
 from ai.optimizer import (
     SUPPORTED_PLATE_THICKNESSES_MM,
     optimize_stabduebel,
 )
 from calculations.stabduebel import StabduebelInput
+
+
+@pytest.fixture(autouse=True)
+def deterministic_legacy_mode(monkeypatch, request) -> None:
+    """These parser tests intentionally exclude an installed Ollama."""
+    if request.node.name == "test_macos_keychain_enables_llm_without_environment_key":
+        return
+    monkeypatch.setenv("KI_LLM_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        StabduebelAssistant, "_resolve_api_key",
+        staticmethod(lambda: (None, "test_local_fallback")),
+    )
 
 
 def test_autonomous_design_asks_only_for_real_clarifications() -> None:
@@ -109,8 +124,10 @@ def test_target_dialog_with_typos_optimizes_all_design_variables() -> None:
 
     one_plate = assistant.respond("gehts auch mit einem?")
     assert one_plate.result is not None
-    assert one_plate.result.input.number_of_plates_ns == 1
-    assert "nicht zulässig" in one_plate.text.lower()
+    assert one_plate.result.input.number_of_plates_ns == 2
+    assert "nicht normkonform" in one_plate.text.lower()
+    assert "mindestens vier" in one_plate.text.lower()
+    assert assistant.state.parameters["number_of_plates_ns"] == 2
 
 
 def test_technical_question_has_priority_and_preserves_full_state() -> None:
@@ -185,7 +202,7 @@ def test_user_fixed_transverse_edge_distance_is_never_centered_automatically() -
 
 def test_macos_keychain_enables_llm_without_environment_key() -> None:
     completed = type("Completed", (), {"stdout": "sk-test-only\n"})()
-    with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "", "KI_LLM_PROVIDER": "openai"}), patch(
         "ai.assistant.os.sys.platform", "darwin"
     ), patch("ai.assistant.subprocess.run", return_value=completed):
         assistant = StabduebelAssistant()

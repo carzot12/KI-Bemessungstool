@@ -56,18 +56,28 @@ class DesktopBridge:
         }
 
     @staticmethod
-    def _brief_result_text(reply: Any) -> str:
+    def _brief_result_text(reply: Any, previous_result: Any = None) -> str:
         if reply.result is None:
             return reply.text
         data = reply.result.input
         count = data.rows_parallel_n * data.rows_perpendicular_m
         status = "erfüllt" if reply.result.passed else "nicht erfüllt"
-        return (
+        summary = (
             f"Ich würde hier Ø{data.dowel_diameter_d_mm:g} mm mit {count} Stabdübeln "
             f"({data.rows_parallel_n} × {data.rows_perpendicular_m}) wählen. "
             f"Der Rechenkern bewertet den Nachweis als {status}. "
-            "Details und berechnete Alternativen findest du rechts."
         )
+        if previous_result is not None and previous_result is not reply.result:
+            before = previous_result.governing_check.utilization * 100
+            after = reply.result.governing_check.utilization * 100
+            direction = "sinkt" if after < before else "ändert sich"
+            summary += (
+                f"Die maximale Ausnutzung {direction} von {before:.1f} % auf "
+                f"{after:.1f} %; maßgebend ist „{reply.result.governing_check.name}“."
+            )
+        else:
+            summary += "Details und berechnete Alternativen findest du rechts."
+        return summary
 
     def bootstrap(self) -> dict[str, Any]:
         with self._lock:
@@ -104,12 +114,12 @@ class DesktopBridge:
                 previous_optimization = self.assistant.state.last_optimization
                 reply = self.assistant.respond(text)
                 design_changed = (
-                    self.assistant.state.last_result is not previous_result
-                    or self.assistant.state.last_optimization is not previous_optimization
+                    self.assistant.state.last_result != previous_result
+                    or self.assistant.state.last_optimization != previous_optimization
                 )
                 self.conversation.append({
                     "role": "assistant",
-                    "content": self._brief_result_text(reply) if design_changed else reply.text,
+                    "content": self._brief_result_text(reply, previous_result) if design_changed else reply.text,
                 })
                 return self._envelope()
             except Exception as exc:
@@ -135,6 +145,15 @@ class DesktopBridge:
             "loadDurations": list(LOAD_DURATION_CLASSES),
             "manualDefaults": asdict(StabduebelInput()),
         }
+
+    def set_llm_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
+        provider = str(payload.get("provider") or "").strip().lower()
+        with self._lock:
+            try:
+                self.assistant.set_llm_provider(provider)
+            except ValueError as exc:
+                return self._error(str(exc))
+            return self._envelope()
 
     def manual_example(self) -> dict[str, Any]:
         """Return the explicit reference input without mutating the design state."""

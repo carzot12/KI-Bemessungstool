@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import urllib.request
 from dataclasses import asdict
 from typing import Any, Callable
 
@@ -424,3 +425,132 @@ class LLMAgent:
             request_id = getattr(exc, "request_id", None)
             LOGGER.exception("LLM request failed model=%s step=%s request_id=%s", self.model, step, request_id)
             raise RuntimeError(f"LLM-Aufruf fehlgeschlagen ({type(exc).__name__}, Modell {self.model}, Schritt {step}, Request-ID {request_id or 'nicht verfügbar'}): {exc}") from exc
+
+
+class OllamaAgent:
+    """Ollama chat/tool adapter using the same deterministic EngineeringTools."""
+
+    def __init__(self, assistant: Any, model: str, base_url: str) -> None:
+        self.assistant = assistant
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.tools = EngineeringTools(assistant)
+
+    def respond(self, user_text: str) -> Any:
+        from ai.assistant import AssistantReply
+
+        self.assistant.message_history.append({"role": "user", "content": user_text})
+        context = json.dumps(self.assistant.agent_context(), ensure_ascii=False)
+        messages: list[dict[str, Any]] = [{
+            "role": "system",
+            "content": self.assistant.agent_system_prompt + "\n\n"
+                "Nutze für jede technische Zahl und jede Berechnung zwingend die Engineering-Tools. "
+                "Erfinde keine Werte. Antworte kurz und natürlich auf Deutsch.",
+        }, *self.assistant.message_history[:-1], {
+            "role": "user",
+            "content": f"ENGINEERING_CONTEXT_JSON:\n{context}\n\nUSER_MESSAGE:\n{user_text}",
+        }]
+        tool_call_count = 0
+        for _ in range(8):
+            message = self._request(messages)
+            calls = message.get("tool_calls") or []
+            if not calls:
+                text = str(message.get("content") or "").strip()
+                if not text:
+                    raise RuntimeError("Das lokale Sprachmodell lieferte keine Antwort.")
+                # Small local models occasionally identify and store every
+                # parameter correctly but stop one step before the explicitly
+                # requested calculation. Complete that requested action only
+                # through the deterministic tool facade.
+                if self.tools.last_reply is None and not self.assistant._missing_required_parameters():
+                    objective = (
+                        "MIN_FASTENER_COUNT"
+                        if re.search(r"wenig|gering|minimum|minimal", user_text, re.I)
+                        else "BALANCED_DESIGN"
+                    )
+                    self.tools.optimize_design(objective, {})
+                    result = self.tools.last_reply.result if self.tools.last_reply else None
+                    if result is not None:
+                        data = result.input
+                        count = data.rows_parallel_n * data.rows_perpendicular_m
+                        text = (
+                            f"Ich habe den Entwurf mit dem deterministischen Rechenkern optimiert: "
+                            f"Ø{data.dowel_diameter_d_mm:g} mm, {data.rows_parallel_n} × "
+                            f"{data.rows_perpendicular_m} = {count} Stabdübel je Stoßseite. "
+                            f"Die maßgebende Ausnutzung beträgt "
+                            f"{result.governing_check.utilization * 100:.1f} %."
+                        )
+                elif self.tools.last_reply is None:
+                    missing = self.assistant._missing_required_parameters()
+                    priority = [
+                        item for item in missing
+                        if item in {"Nutzungsklasse", "Klasse der Lasteinwirkungsdauer"}
+                    ] or missing
+                    if priority:
+                        text = "Bitte ergänze noch " + " und ".join(priority[:2]) + "."
+                self.assistant.message_history.append({"role": "assistant", "content": text})
+                self.assistant.last_runtime_trace.update(
+                    TOOL_CALLS=tool_call_count, RESPONSE_SOURCE="OLLAMA",
+                )
+                result = self.tools.last_reply.result if self.tools.last_reply else self.assistant.state.last_result
+                return AssistantReply(text, result, True, self.assistant._recognized_parameters(result), self.assistant.state.last_recommendation or "")
+            messages.append(message)
+            tool_call_count += len(calls)
+            for call in calls:
+                function = call.get("function") or {}
+                name = str(function.get("name") or "")
+                arguments = function.get("arguments") or {}
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments or "{}")
+                schema = next((item for item in TOOL_DEFINITIONS if item["name"] == name), None)
+                if schema:
+                    allowed = set(schema["parameters"].get("properties", {}))
+                    arguments = {key: value for key, value in arguments.items() if key in allowed}
+                if name == "update_design":
+                    arguments.setdefault("parameters", {})
+                    arguments.setdefault("provenance", "USER_FIXED")
+                    arguments.setdefault("source", None)
+                    arguments.setdefault(
+                        "autonomy_mode",
+                        True if re.search(r"rest.*(?:optimier|entscheid|selbst)", user_text, re.I) else None,
+                    )
+                elif name in {"optimize_design", "compare_variants", "calculate_maximum_load"}:
+                    arguments.setdefault("constraints", {})
+                try:
+                    value = self.tools.dispatch(name, arguments)
+                    self.assistant.agent_events.append({
+                        "type": "tool_call", "name": name,
+                        "arguments": arguments, "result": value,
+                    })
+                except Exception as exc:
+                    LOGGER.exception("Ollama tool failed model=%s tool=%s", self.model, name)
+                    value = {"error": type(exc).__name__, "message": str(exc)}
+                messages.append({
+                    "role": "tool", "tool_name": name,
+                    "content": json.dumps(value, ensure_ascii=False, default=str),
+                })
+        raise RuntimeError("Die maximale Anzahl lokaler Engineering-Toolschritte wurde erreicht.")
+
+    def _request(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": item["name"], "description": item["description"],
+                "parameters": item["parameters"],
+            },
+        } for item in TOOL_DEFINITIONS]
+        body = json.dumps({
+            "model": self.model, "messages": messages, "tools": tools,
+            "stream": False, "think": False,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/chat", data=body,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                payload = json.load(response)
+            return payload["message"]
+        except Exception as exc:
+            LOGGER.exception("Ollama request failed model=%s", self.model)
+            raise RuntimeError(f"Lokale KI nicht verfügbar ({type(exc).__name__}: {exc})") from exc

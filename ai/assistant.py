@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import urllib.request
 from difflib import get_close_matches
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -39,6 +40,8 @@ from .optimizer import (
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "stabduebel_system.txt"
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 TWO_SHEAR_ONE_INTERNAL_PLATE = "TWO_SHEAR_ONE_INTERNAL_PLATE"
 MULTI_SHEAR_TWO_INTERNAL_PLATES = "MULTI_SHEAR_TWO_INTERNAL_PLATES"
 GEOMETRY_OPTIMIZATION_VERIFIED = True
@@ -227,6 +230,9 @@ class StabduebelAssistant:
         self._llm_client: Any = None
         self._agent: Any = None
         self._force_local = False
+        self.llm_provider = os.getenv("KI_LLM_PROVIDER", "local").strip().lower()
+        if self.llm_provider not in {"local", "openai"}:
+            self.llm_provider = "local"
         self.last_runtime_trace: dict[str, Any] = {}
         self.debug_enabled = os.getenv("STABDUEBEL_DEBUG", "").lower() in {
             "1", "true", "yes",
@@ -256,11 +262,30 @@ class StabduebelAssistant:
 
     @property
     def llm_available(self) -> bool:
-        return bool(self._api_key)
+        return self.provider_available(self.llm_provider)
 
     @property
     def llm_online(self) -> bool:
         return self.llm_status == "ONLINE"
+
+    def provider_available(self, provider: str) -> bool:
+        if provider == "openai":
+            return bool(self._api_key)
+        try:
+            with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=1.5) as response:
+                models = json.load(response).get("models", [])
+            return any(item.get("name") == OLLAMA_MODEL for item in models)
+        except Exception:
+            return False
+
+    def set_llm_provider(self, provider: str) -> None:
+        if provider not in {"local", "openai"}:
+            raise ValueError("Unbekannter KI-Provider.")
+        self.llm_provider = provider
+        self.llm_status = "UNTESTED"
+        self.llm_error = None
+        self._llm_client = None
+        self._agent = None
 
     def reset(self) -> None:
         self.state = ConversationState()
@@ -279,10 +304,10 @@ class StabduebelAssistant:
     def respond(self, user_text: str) -> AssistantReply:
         self.last_runtime_trace = {
             "USER_TEXT": user_text,
-            "MODE": "KI_ONLINE" if self.llm_online else "LOCAL_OR_UNTESTED",
-            "LLM_AVAILABLE": bool(self._api_key),
+            "MODE": f"{self.llm_provider.upper()}_OR_UNTESTED",
+            "LLM_AVAILABLE": self.provider_available(self.llm_provider),
             "LLM_REQUEST_STARTED": False,
-            "MODEL": MODEL,
+            "MODEL": OLLAMA_MODEL if self.llm_provider == "local" else MODEL,
             "TOOL_CALLS": 0,
             "RESPONSE_SOURCE": "PENDING",
             "INTENT": None,
@@ -293,14 +318,25 @@ class StabduebelAssistant:
             "FEASIBLE_VARIANT_COUNT": 0,
             "SELECTED_VARIANT": None,
         }
-        if self._api_key and not self._force_local:
+        local_guard_intent: str | None = None
+        local_guard_state: ConversationState | None = None
+        if self.llm_provider == "local" and not self._force_local:
+            state_before_local_input = self.copy_state()
+            self._secure_local_explicit_input(user_text)
+            local_guard_intent = str(self._fallback_extract(user_text).get("intent") or "")
+            local_guard_state = (
+                self.copy_state()
+                if local_guard_intent == "NEW_DESIGN"
+                else state_before_local_input
+            )
+        if not self._force_local and self.provider_available(self.llm_provider):
             if not self._ensure_llm_online():
                 self.last_runtime_trace.update(
                     MODE="LLM_ERROR", RESPONSE_SOURCE="LLM_ERROR",
                 )
                 self._log_runtime_trace()
                 return AssistantReply(
-                    f"LLM-Aufruf fehlgeschlagen. {self.llm_error}",
+                    self._provider_error_message(),
                     self.state.last_result,
                     False,
                     self._recognized_parameters(self.state.last_result),
@@ -311,12 +347,31 @@ class StabduebelAssistant:
             )
             try:
                 reply = self._agent.respond(user_text)
-            except Exception:
+            except Exception as exc:
                 self.llm_status = "ERROR"
+                self.llm_error = f"{type(exc).__name__}: {exc}"
                 self.last_runtime_trace["MODE"] = "LLM_ERROR"
                 self.last_runtime_trace["RESPONSE_SOURCE"] = "LLM_ERROR"
                 self._log_runtime_trace()
-                raise
+                return AssistantReply(
+                    self._provider_error_message(), self.state.last_result, False,
+                    self._recognized_parameters(self.state.last_result), self.llm_error,
+                )
+            if (
+                self.llm_provider == "local"
+                and local_guard_intent in {
+                    "NEW_DESIGN", "PARAMETER_CHANGE", "OPTIMIZE", "WHAT_IF",
+                    "COMPARE", "MAXIMUM_LOAD", "TARGET_UTILIZATION",
+                    "RECOMMEND_IMPROVEMENT", "ASK_CURRENT_STATE", "UNDO_LAST_CHANGE",
+                }
+                and local_guard_state is not None
+            ):
+                # The local model may explain and suggest, but the state-changing
+                # answer is always regenerated by the deterministic workflow.
+                self.state = local_guard_state
+                reply = self.execute_local_command(user_text)
+                if self.message_history and self.message_history[-1].get("role") == "assistant":
+                    self.message_history[-1]["content"] = reply.text
             self._log_runtime_trace()
             return reply
         reply = self._respond_legacy(user_text)
@@ -325,6 +380,29 @@ class StabduebelAssistant:
         )
         self._log_runtime_trace()
         return reply
+
+    def _secure_local_explicit_input(self, user_text: str) -> None:
+        """Persist explicit local-chat values even if a small model skips its tool."""
+        extracted = self._fallback_extract(user_text)
+        if self._has_extracted_change(extracted):
+            self._apply(extracted)
+        if extracted.get("intent") == "NEW_DESIGN":
+            defaults = StabduebelInput()
+            for key, value in (
+                ("width_b_mm", defaults.width_b_mm),
+                ("height_h_mm", defaults.height_h_mm),
+            ):
+                if key not in self.state.parameters:
+                    self.state.parameters[key] = value
+                    self.state.parameter_provenance[key] = "AI_DERIVED"
+            self.state.autonomy_mode = True
+            if not self.state.optimization_goal:
+                self.state.optimization_goal = "BALANCED_DESIGN"
+
+    def _provider_error_message(self) -> str:
+        if self.llm_provider == "openai":
+            return "OpenAI API derzeit nicht verfügbar. Du kannst für die Demo auf die lokale KI wechseln."
+        return "Die lokale KI ist derzeit nicht erreichbar. Die Bemessungsfunktionen bleiben weiterhin verfügbar."
 
     def _log_runtime_trace(self) -> None:
         line = " ".join(
@@ -346,15 +424,21 @@ class StabduebelAssistant:
     def _ensure_llm_online(self) -> bool:
         if self.llm_status == "ONLINE":
             return True
-        if not self._api_key:
-            self.llm_status = "LOCAL"
-            return False
         try:
-            from openai import OpenAI
-            from .agent import LLMAgent
-            self._llm_client = OpenAI(api_key=self._api_key)
-            self._llm_client.models.retrieve(MODEL)
-            self._agent = LLMAgent(self, self._llm_client, MODEL)
+            if self.llm_provider == "local":
+                from .agent import OllamaAgent
+                if not self.provider_available("local"):
+                    raise RuntimeError(f"Ollama oder Modell {OLLAMA_MODEL} nicht verfügbar")
+                self._agent = OllamaAgent(self, OLLAMA_MODEL, OLLAMA_BASE_URL)
+            else:
+                if not self._api_key:
+                    raise RuntimeError("OPENAI_API_KEY ist nicht konfiguriert")
+                from openai import OpenAI
+                from .agent import LLMAgent
+                self._llm_client = OpenAI(api_key=self._api_key)
+                # Keine kostenpflichtige Statusanfrage: Die echte Verfügbarkeit
+                # wird erst beim ersten Chat-Request festgestellt.
+                self._agent = LLMAgent(self, self._llm_client, MODEL)
             self.llm_status = "ONLINE"
             self.llm_error = None
             return True
@@ -605,6 +689,20 @@ class StabduebelAssistant:
             )
 
         state_before_change = deepcopy(self.state)
+        if (
+            extracted.get("number_of_plates_ns") == 1
+            and state_before_change.last_result is not None
+        ):
+            text = (
+                "Unter dem aktuell gewählten österreichischen Normprofil ist "
+                "die Ausführung mit nur einem innenliegenden Stahlblech nicht "
+                "normkonform: Sie besitzt zwei Scherflächen, gefordert sind "
+                "mindestens vier. Der bestehende zulässige Favorit bleibt unverändert."
+            )
+            return AssistantReply(
+                text, state_before_change.last_result, used_llm,
+                self._recognized_parameters(state_before_change.last_result), text,
+            )
         self._apply(extracted)
         self.state.previous_technical_state = dict(state_before_change.parameters)
         self.state.pending_clarification = None
@@ -721,6 +819,21 @@ class StabduebelAssistant:
             FEASIBLE_VARIANT_COUNT=optimization.feasible_count,
         )
         if optimization.selected is None:
+            if (
+                extracted.get("number_of_plates_ns") == 1
+                and state_before_change.last_result is not None
+            ):
+                self.state = state_before_change
+                text = (
+                    "Unter dem aktuell gewählten österreichischen Normprofil ist "
+                    "die Ausführung mit nur einem innenliegenden Stahlblech nicht "
+                    "normkonform: Sie besitzt zwei Scherflächen, gefordert sind "
+                    "mindestens vier. Der bestehende zulässige Favorit bleibt unverändert."
+                )
+                return AssistantReply(
+                    text, self.state.last_result, used_llm,
+                    self._recognized_parameters(self.state.last_result), text,
+                )
             displayed = min(
                 optimization.evaluated,
                 key=lambda item: (
@@ -1504,11 +1617,11 @@ class StabduebelAssistant:
 
         if re.search(r"rückgängig|vorige\s+variante|letzte\s+änderung.*zurück", normalized):
             data["intent"] = "UNDO_LAST_CHANGE"
-        elif re.search(r"wie\s*viel.*trägt.*(?:maximal|höchstens)|wie\s*viel.*(?:maximal|höchstens).*trägt|max(?:imal)?\s*last|wie\s*viel\s+(?:kn\s+)?geht|wieviel\s+(?:kn\s+)?geht|welche\s+maximallast", normalized):
+        elif re.search(r"wie\s*viel.*trägt.*(?:maximal|höchstens)|wie\s*viel.*hält.*(?:maximal|höchstens)|wie\s*viel.*(?:maximal|höchstens).*trägt|max(?:imal)?\s*last|wie\s*viel\s+(?:kn\s+)?geht|wieviel\s+(?:kn\s+)?geht|welche\s+maximallast", normalized):
             data["intent"] = "MAXIMUM_LOAD"
         elif re.search(r"was\s+wäre|was\s+wenn|was\s+passiert|und\s+wenn", normalized):
             data["intent"] = "WHAT_IF"
-        elif re.search(r"was\s+(?:hab|habe).*eingestellt|was.*momentan|aktueller?\s+entwurf|was\s+war.*(?:querschnitt|eingestellt)|was\s+rechnen\s+wir", normalized):
+        elif re.search(r"was\s+(?:hab|habe).*eingestellt|was.*momentan|aktueller?\s+entwurf|was\s+war.*(?:querschnitt|eingestellt)|was\s+rechnen\s+wir|welche\s+verbindung.*(?:gewählt|genommen)", normalized):
             data["intent"] = "ASK_CURRENT_STATE"
         elif re.search(r"vergleich", normalized):
             data["intent"] = "COMPARE"
@@ -2548,6 +2661,22 @@ class StabduebelAssistant:
     def _current_state_text(self) -> str:
         result_input = self.state.last_result.input if self.state.last_result else None
         p = self.state.parameters
+        if self.state.last_result is not None and result_input is not None:
+            count = result_input.rows_parallel_n * result_input.rows_perpendicular_m
+            return (
+                f"Gewählt ist ein Zuglaschenstoß für {result_input.force_ed_kn:g} kN "
+                f"mit {result_input.timber_grade}, Querschnitt "
+                f"{result_input.width_b_mm:g} × {result_input.height_h_mm:g} mm, "
+                f"Nutzungsklasse {result_input.service_class} und "
+                f"Lasteinwirkungsdauer {result_input.load_duration_class}. "
+                f"Die Verbindung besitzt {result_input.number_of_plates_ns} Stahlbleche "
+                f"à {result_input.plate_thickness_ts_mm:g} mm und "
+                f"{result_input.rows_parallel_n} × {result_input.rows_perpendicular_m} = "
+                f"{count} Stabdübel Ø{result_input.dowel_diameter_d_mm:g} mm. "
+                f"Die maximale Ausnutzung beträgt "
+                f"{self.state.last_result.governing_check.utilization * 100:.1f} %; "
+                f"maßgebend ist „{self.state.last_result.governing_check.name}“."
+            )
         lines = ["Benutzervorgaben:"]
         user_values = [
             ("Last", f"{float(p['force_ed_kn']):g} kN" if "force_ed_kn" in p else None),

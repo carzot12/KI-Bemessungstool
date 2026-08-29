@@ -13,7 +13,11 @@ def offline_assistant() -> StabduebelAssistant:
         StabduebelAssistant, "_resolve_api_key",
         return_value=(None, "local_fallback"),
     ):
-        return StabduebelAssistant()
+        assistant = StabduebelAssistant()
+        # Preserve the historical no-key/OpenAI fallback semantics in this
+        # test helper; dedicated provider tests cover the new local default.
+        assistant.llm_provider = "openai"
+        return assistant
 
 
 class FakeResponses:
@@ -146,8 +150,8 @@ def test_invalid_model_does_not_silently_fallback() -> None:
     with patch("openai.OpenAI", return_value=failing_client):
         reply = assistant.respond("Hallo")
     assert assistant.llm_status == "ERROR"
-    assert "LLM-Aufruf fehlgeschlagen" in reply.text
-    assert "model not found" in reply.text
+    assert "OpenAI API derzeit nicht verfügbar" in reply.text
+    assert "auf die lokale KI wechseln" in reply.text
     assert assistant.state.parameters == {}
 
 
@@ -297,7 +301,12 @@ def test_gui_runtime_core_routes_small_talk_to_llm_with_zero_tools() -> None:
         ]
     assert all(reply.used_llm for reply in replies)
     assert assistant.llm_online is True
-    assert assistant.last_runtime_trace == {
+    assert {
+        key: assistant.last_runtime_trace[key] for key in (
+            "USER_TEXT", "MODE", "LLM_AVAILABLE", "LLM_REQUEST_STARTED",
+            "MODEL", "TOOL_CALLS", "RESPONSE_SOURCE",
+        )
+    } == {
         "USER_TEXT": "Was kannst du?", "MODE": "KI_ONLINE",
         "LLM_AVAILABLE": True, "LLM_REQUEST_STARTED": True,
         "MODEL": "gpt-5-mini", "TOOL_CALLS": 0,

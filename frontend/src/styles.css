@@ -366,6 +366,50 @@ textarea {
     box-shadow var(--normal),
     background var(--normal);
 }
+.chat-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.model-control {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 3px 8px;
+}
+.model-control > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+.model-toggle {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+.model-toggle button {
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+.model-toggle button.active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(20, 30, 40, .12);
+}
+.model-control small {
+  grid-column: 1 / -1;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.model-control small.available { color: var(--success); }
+.model-control small.unavailable { color: var(--muted); }
 .card:hover {
   transform: translateY(-1px);
   border-color: var(--border-strong);

@@ -222,13 +222,32 @@ function Chat({
           .join("\n\n");
     await navigator.clipboard.writeText(content);
   };
+  const selectProvider = async (provider: "local" | "openai") => {
+    if (!window.pywebview || provider === snapshot.agentStatus.provider) return;
+    const result = await window.pywebview.api.set_llm_provider({ provider });
+    if (!result.ok || !result.data) onError(result.error || "KI-Modell konnte nicht gewechselt werden.");
+    else onSnapshot(result.data);
+  };
   return (
     <section className="chat card">
       <div className="card-head">
         <h2>
           <span className="spark">✦</span> KI-Assistent
         </h2>
-        <button onClick={copy}>Chat kopieren</button>
+        <div className="chat-head-actions">
+          <div className="model-control" aria-label="KI-Modell auswählen">
+            <span>KI-Modell</span>
+            <div className="model-toggle">
+              <button className={snapshot.agentStatus.provider === "local" ? "active" : ""} onClick={() => void selectProvider("local")}>Lokal</button>
+              <button className={snapshot.agentStatus.provider === "openai" ? "active" : ""} onClick={() => void selectProvider("openai")}>OpenAI</button>
+            </div>
+            <small className={snapshot.agentStatus.available ? "available" : "unavailable"}>
+              {snapshot.agentStatus.available ? "●" : "○"} {snapshot.agentStatus.detail}
+              {snapshot.agentStatus.provider === "local" ? " · Daten bleiben auf diesem Gerät" : ""}
+            </small>
+          </div>
+          <button onClick={copy}>Chat kopieren</button>
+        </div>
       </div>
       <div
         className="messages"
