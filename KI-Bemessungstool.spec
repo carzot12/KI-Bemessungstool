@@ -15,6 +15,7 @@ if not (is_macos or is_windows):
 datas = [
     (str(project_root / "frontend" / "dist"), "frontend/dist"),
     (str(project_root / "assets" / "logo.png"), "assets"),
+    (str(project_root / "assets" / "widget_1.png"), "assets"),
     (
         str(project_root / "infopol" / "materials" / "timber.json"),
         "infopol/materials",

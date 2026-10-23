@@ -152,22 +152,6 @@ def validate_oenorm(
             unit="Stück",
         ),
         ValidationCheck(
-            name="Mindestanzahl Scherflächen",
-            status=(
-                ValidationStatus.PASSED
-                if data.shear_planes_s >= 4
-                else ValidationStatus.FAILED
-            ),
-            source=OENORM_B_86,
-            message=(
-                f"{data.shear_planes_s} Scherflächen vorhanden; "
-                "mindestens 4 erforderlich."
-            ),
-            actual=float(data.shear_planes_s),
-            required=4.0,
-            unit="Stück",
-        ),
-        ValidationCheck(
             name="Scherflächen und innenliegende Stahlbleche",
             status=(
                 ValidationStatus.PASSED
@@ -197,28 +181,6 @@ def validate_oenorm(
             ),
         ),
     ])
-
-    dowel_fu_by_grade = {"S235": 360.0, "S275": 430.0, "S355": 510.0}
-    expected_fu = dowel_fu_by_grade.get(data.dowel_steel_grade.upper())
-    steel_ok = expected_fu is not None and abs(
-        data.dowel_fu_k_n_mm2 - expected_fu
-    ) <= 1e-9
-    checks.append(ValidationCheck(
-        name="Stabdübel-Stahlsorte und Zugfestigkeit",
-        status=ValidationStatus.PASSED if steel_ok else ValidationStatus.FAILED,
-        source=f"{OENORM_B_86}, Tabelle NA.8.4-E2",
-        message=(
-            f"{data.dowel_steel_grade}: fu,k = {data.dowel_fu_k_n_mm2:g} N/mm²"
-            + (
-                f"; erforderlich sind {expected_fu:g} N/mm²."
-                if expected_fu is not None
-                else "; diese Stahlsorte ist im V1-Normprofil nicht hinterlegt."
-            )
-        ),
-        actual=data.dowel_fu_k_n_mm2,
-        required=expected_fu,
-        unit="N/mm²",
-    ))
 
     required_height = 2.0 * data.a4_c_mm + (
         data.rows_perpendicular_m - 1

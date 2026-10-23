@@ -36,13 +36,13 @@ def test_reset_clears_shared_design_but_keeps_clean_conversation() -> None:
     assert len(reset["conversation"]) == 1
 
 
-def test_reports_contain_only_available_result_and_variants(tmp_path) -> None:
+def test_reports_contain_only_available_result_and_variants(tmp_path, technical_drawings) -> None:
     bridge = DesktopBridge(demo_enabled=False)
     bridge.manual_calculate(asdict(StabduebelInput()))
     snapshot = bridge.bootstrap()["data"]
 
-    calculation = create_report(snapshot, "calculation", tmp_path)
-    variants = create_report(snapshot, "variants", tmp_path)
+    calculation = create_report(snapshot, "calculation", tmp_path, technical_drawings=technical_drawings)
+    variants = create_report(snapshot, "variants", tmp_path, technical_drawings=technical_drawings)
     assert calculation.exists() and calculation.stat().st_size > 1_000
     assert variants.exists() and variants.stat().st_size > 1_000
 
@@ -58,11 +58,11 @@ def test_report_without_calculation_is_rejected(tmp_path) -> None:
         raise AssertionError("Leerer Entwurf darf keinen Bericht erzeugen")
 
 
-def test_report_geometry_is_identical_to_python_snapshot(tmp_path) -> None:
+def test_report_geometry_is_identical_to_python_snapshot(tmp_path, technical_drawings) -> None:
     bridge = DesktopBridge(demo_enabled=True)
     snapshot = bridge.bootstrap()["data"]
     geometry = snapshot["connectionGeometry"]
-    report = create_report(snapshot, "calculation", tmp_path)
+    report = create_report(snapshot, "calculation", tmp_path, technical_drawings=technical_drawings)
     text = subprocess.run(
         ["pdftotext", str(report), "-"], check=True,
         capture_output=True, text=True,
@@ -77,7 +77,11 @@ def test_report_geometry_is_identical_to_python_snapshot(tmp_path) -> None:
     ) in text
     assert f"{geometry['e1Mm']:g} / {geometry['e2Mm']:g} mm" in text
     assert "Normative Geometrieprüfung" in text
-    assert "Technische Zeichnung" in text
+    assert "Technische Darstellungen" in text
+    assert "Seitenansicht" in text
+    assert "Draufsicht" in text
+    assert "Schnitt A-A" in text
+    assert "3D-Darstellung" in text
 
 
 def test_report_rejects_inconsistent_snapshot_geometry(tmp_path) -> None:

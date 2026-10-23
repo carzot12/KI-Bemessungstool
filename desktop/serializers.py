@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from ai.assistant import MODEL, OLLAMA_MODEL, StabduebelAssistant
+from ai.engineering_assessment import compact_assessment
 from ai.optimizer import curated_feasible_variants, ranked_feasible_variants
 from calculations.oenorm_validation import validate_oenorm
 from calculations.stabduebel import StabduebelInput, StabduebelResult, calculate_stabduebel
@@ -425,7 +426,7 @@ def serialize_snapshot(
         "available": available,
         "privacyDetail": "Daten bleiben auf diesem Gerät" if provider == "local" else "Cloud-KI optional",
     })
-    return {
+    snapshot = {
         "technicalState": dict(assistant.state.parameters),
         "currentResult": _result(current),
         "lastOptimization": (
@@ -460,3 +461,5 @@ def serialize_snapshot(
         "connectionGeometry": connection_geometry(current.input) if current else None,
         "demoMode": assistant.state.last_result is None and demo is not None,
     }
+    snapshot["engineeringAssessment"] = compact_assessment(snapshot)
+    return snapshot

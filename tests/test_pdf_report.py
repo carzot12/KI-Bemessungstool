@@ -8,7 +8,7 @@ from desktop.bridge import DesktopBridge
 from desktop.reports import create_report
 
 
-def test_pdf_smoke_uses_current_favorite_snapshot(tmp_path) -> None:
+def test_pdf_smoke_uses_current_favorite_snapshot(tmp_path, technical_drawings) -> None:
     bridge = DesktopBridge(demo_enabled=False)
     reference = StabduebelInput(
         project_name="PDF Referenzprojekt",
@@ -39,6 +39,7 @@ def test_pdf_smoke_uses_current_favorite_snapshot(tmp_path) -> None:
     report = create_report(
         snapshot, "calculation", tmp_path,
         filename="PDF_Referenzbericht.pdf",
+        technical_drawings=technical_drawings,
     )
 
     assert report.exists()

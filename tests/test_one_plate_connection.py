@@ -14,6 +14,7 @@ from ai.assistant import (
 from ai.optimizer import optimize_stabduebel
 from calculations.oenorm_validation import validate_oenorm
 from calculations.stabduebel import StabduebelInput, calculate_stabduebel
+from desktop.serializers import connection_geometry
 
 
 def respond(assistant: StabduebelAssistant, prompt: str):
@@ -29,8 +30,7 @@ def respond(assistant: StabduebelAssistant, prompt: str):
     assistant.state.parameters.setdefault("slot_air_per_cut_ts_l_mm", 1.0)
     assistant._set_connection_state(int(assistant.state.parameters["number_of_plates_ns"]))
     assistant.state.minimize_fasteners = True
-    with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
-        return assistant.respond(prompt)
+    return assistant.execute_local_command(prompt)
 
 
 def test_one_plate_uses_separate_double_shear_equation_811_model() -> None:
@@ -62,7 +62,7 @@ def test_one_plate_uses_separate_double_shear_equation_811_model() -> None:
     }
 
 
-def test_one_plate_is_always_nationally_inadmissible() -> None:
+def test_one_plate_is_admissible_when_implemented_checks_pass() -> None:
     data = replace(
         StabduebelInput(),
         force_ed_kn=20.0,
@@ -73,9 +73,9 @@ def test_one_plate_is_always_nationally_inadmissible() -> None:
     validation = validate_oenorm(data, result)
 
     assert result.passed
-    assert not validation.admissible
-    assert "Mindestanzahl Scherflächen" in {
-        check.name for check in validation.failures
+    assert validation.admissible
+    assert "Mindestanzahl Scherflächen" not in {
+        check.name for check in validation.checks
     }
 
 
@@ -104,8 +104,10 @@ def test_assistant_recognizes_one_plate_connection_wordings(wording: str) -> Non
     assert assistant.state.connection_type == TWO_SHEAR_ONE_INTERNAL_PLATE
     assert assistant.state.parameters["number_of_plates_ns"] == 1
     assert assistant.state.shear_planes_s == 2
-    assert "Gleichung (8.11)" in reply.text
-    assert "nicht zulässig" in reply.text
+    assert reply.result.timber_fastener["connection_model"] == (
+        "EN 1995-1-1 (8.11), zweischnittig"
+    )
+    assert "nicht zulässig" not in reply.text
 
 
 def test_chat_switches_between_connection_cases() -> None:
@@ -160,7 +162,7 @@ def test_einschnittig_asks_without_changing_state() -> None:
     assert assistant.state.last_optimization is before_optimization
 
 
-def test_optimizer_compares_both_but_selects_only_nationally_admissible_case() -> None:
+def test_optimizer_compares_admissible_one_and_two_plate_cases() -> None:
     optimization = optimize_stabduebel(
         StabduebelInput(),
         minimize_fasteners=True,
@@ -169,8 +171,32 @@ def test_optimizer_compares_both_but_selects_only_nationally_admissible_case() -
     assert {item.input.number_of_plates_ns for item in optimization.evaluated} == {1, 2}
     assert optimization.selected is not None
     assert optimization.selected.input.number_of_plates_ns == 2
-    assert all(
-        not item.validation.admissible
+    assert any(
+        item.validation.admissible and item.result.passed
         for item in optimization.evaluated
         if item.input.number_of_plates_ns == 1
     )
+
+
+def test_one_plate_connection_geometry_has_real_three_layer_topology() -> None:
+    data = replace(
+        StabduebelInput(), number_of_plates_ns=1,
+        plate_thickness_ts_mm=6.0, side_thickness_t1_mm=97.0,
+    )
+    geometry = connection_geometry(data)
+    assert geometry["plateCount"] == 1
+    assert geometry["platePositionsMm"] == [100.0]
+    assert geometry["crossSectionLayersMm"] == [97.0, 6.0, 97.0]
+    assert sum(geometry["crossSectionLayersMm"]) == data.width_b_mm
+
+
+def test_chat_compares_calculated_one_and_two_plate_solutions() -> None:
+    assistant = StabduebelAssistant()
+    respond(assistant, "140 kN, GL24h, möglichst wenige Stabdübel")
+    reply = assistant.execute_local_command(
+        "Vergleiche eine Lösung mit einem und mit zwei Stahlblechen."
+    )
+    assert "1 Blech(e):" in reply.text
+    assert "2 Blech(e):" in reply.text
+    assert "Ø" in reply.text
+    assert "maßgebend" in reply.text

@@ -16,6 +16,22 @@ venv/
 # PyInstaller
 build/
 dist/
+*.app/
+
+# Lokale Sicherungen, Zwischenstände und Laufzeitdateien
+backups/
+tmp/
+*.backup
+*.log
+
+# Vertrauliche Präsentations- und Forschungsunterlagen
+/Präsentation/
+/Technischer_Bericht_KI_Bemessungstool.docx
+*.mov
+*.mp4
+*.prproj
+*.cfa
+*.pek
 
 # Zugangsdaten / KI API Keys
 .env

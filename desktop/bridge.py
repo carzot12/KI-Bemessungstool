@@ -4,6 +4,7 @@ import os
 import sys
 import subprocess
 import logging
+import re
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -18,6 +19,10 @@ from infopol.materials import (
     get_kmod,
 )
 from ai.optimizer import curated_feasible_variants
+from ai.engineering_assessment import (
+    build_assessment_context,
+    generate_engineering_report,
+)
 
 from .serializers import DemoSnapshot, build_demo_snapshot, serialize_snapshot
 from .reports import create_report
@@ -63,7 +68,10 @@ class DesktopBridge:
         count = data.rows_parallel_n * data.rows_perpendicular_m
         status = "erfüllt" if reply.result.passed else "nicht erfüllt"
         summary = (
-            f"Ich würde hier Ø{data.dowel_diameter_d_mm:g} mm mit {count} Stabdübeln "
+            f"Ich würde hier {data.number_of_plates_ns} innenliegende"
+            f"{'s Stahlblech' if data.number_of_plates_ns == 1 else ' Stahlbleche'} "
+            f"mit ts = {data.plate_thickness_ts_mm:g} mm und "
+            f"Ø{data.dowel_diameter_d_mm:g} mm mit {count} Stabdübeln "
             f"({data.rows_parallel_n} × {data.rows_perpendicular_m}) wählen. "
             f"Der Rechenkern bewertet den Nachweis als {status}. "
         )
@@ -110,6 +118,19 @@ class DesktopBridge:
         with self._lock:
             self.conversation.append({"role": "user", "content": text})
             try:
+                if (
+                    self.assistant.state.last_result is not None
+                    and re.search(r"\b(?:billig|günstig|kosten)\w*\b", text, re.IGNORECASE)
+                ):
+                    answer = (
+                        "Eine belastbare Kosten- oder Wirtschaftlichkeitsbewertung ist mit den "
+                        "aktuell vorhandenen Daten nicht möglich. Der Rechenkern enthält keine "
+                        "Kostenwerte. Ich kann die tatsächlich berechneten Varianten stattdessen "
+                        "nach Ausnutzung, Stabdübelanzahl, Durchmesser, Stahlblechanzahl und "
+                        "Geometrie vergleichen."
+                    )
+                    self.conversation.append({"role": "assistant", "content": answer})
+                    return self._envelope()
                 previous_result = self.assistant.state.last_result
                 previous_optimization = self.assistant.state.last_optimization
                 reply = self.assistant.respond(text)
@@ -155,6 +176,49 @@ class DesktopBridge:
                 return self._error(str(exc))
             return self._envelope()
 
+    def create_engineering_assessment(self) -> dict[str, Any]:
+        """Generate a guarded report without changing engineering state."""
+        with self._lock:
+            snapshot = serialize_snapshot(
+                self.assistant, self.conversation, demo=self.demo,
+            )
+            context = build_assessment_context(snapshot, self.conversation)
+            if context is None:
+                return {
+                    "ok": False,
+                    "available": False,
+                    "report": None,
+                    "error": "Für die KI-Auswertung liegt noch keine Berechnung vor.",
+                }
+            if not self.assistant.provider_available(self.assistant.llm_provider):
+                return {
+                    "ok": False,
+                    "available": False,
+                    "report": None,
+                    "error": "KI-Auswertung derzeit nicht verfügbar.",
+                }
+            try:
+                sections = generate_engineering_report(self.assistant, context)
+            except Exception as exc:
+                LOGGER.exception("Guarded engineering assessment failed")
+                return {
+                    "ok": False,
+                    "available": False,
+                    "report": None,
+                    "error": "KI-Auswertung derzeit nicht verfügbar.",
+                    "detail": str(exc),
+                }
+            return {
+                "ok": True,
+                "available": True,
+                "report": {
+                    "title": "KI-Auswertung & Rechenkern Feedback",
+                    "sections": sections,
+                    "provider": self.assistant.llm_provider,
+                },
+                "error": None,
+            }
+
     def manual_example(self) -> dict[str, Any]:
         """Return the explicit reference input without mutating the design state."""
         return {"ok": True, "data": asdict(StabduebelInput()), "error": None}
@@ -167,6 +231,19 @@ class DesktopBridge:
             snapshot = serialize_snapshot(
                 self.assistant, self.conversation, demo=self.demo,
             )
+            geometry_snapshot = payload.get("geometrySnapshot")
+            technical_drawings = payload.get("technicalDrawings")
+            if geometry_snapshot != snapshot.get("connectionGeometry"):
+                return {
+                    "status": "error",
+                    "message": "UI- und Berichtgeometrie stimmen nicht überein.",
+                }
+            expected_views = {"side", "top", "section", "isometric"}
+            if not isinstance(technical_drawings, dict) or set(technical_drawings) != expected_views:
+                return {
+                    "status": "error",
+                    "message": "Die vier technischen UI-Darstellungen fehlen.",
+                }
             project = str(snapshot.get("projectName") or "").strip()
             safe_project = "".join(
                 "_" if character in '/\\:\0' else character
@@ -215,6 +292,7 @@ class DesktopBridge:
                 target = create_report(
                     snapshot, report_type, target.parent,
                     filename=target.name,
+                    technical_drawings=technical_drawings,
                 )
                 exists = target.is_file()
                 size = target.stat().st_size if exists else 0

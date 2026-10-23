@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import type { BridgeEnvelope, FormOptions, UISnapshot, Variant } from "./types";
+import type { BridgeEnvelope, FormOptions, PdfTechnicalDrawing, PdfTechnicalView, UISnapshot, Variant } from "./types";
 import SideView from "./visualization/SideView";
 import SectionView from "./visualization/SectionView";
 import IsometricView from "./visualization/IsometricView";
@@ -15,6 +15,81 @@ window.addEventListener("unhandledrejection", (event) => {
 
 type View = "Seitenansicht" | "Draufsicht" | "Schnitt A-A" | "3D";
 type Theme = "light" | "dark";
+
+const PDF_VIEWS: PdfTechnicalView[] = ["side", "top", "section", "isometric"];
+
+function PdfDrawingSource({ model }: { model: UISnapshot["connectionGeometry"] }) {
+  if (!model) return null;
+  return <div className="pdf-drawing-source" aria-hidden="true">
+    <div data-pdf-view="side"><SideView model={model} dimensions /></div>
+    <div data-pdf-view="top"><TopView model={model} dimensions /></div>
+    <div data-pdf-view="section"><SectionView model={model} dimensions /></div>
+    <div data-pdf-view="isometric"><IsometricView model={model} dimensions /></div>
+  </div>;
+}
+
+function inlineSvgStyles(source: SVGSVGElement): SVGSVGElement {
+  const clone = source.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const sourceNodes = [source, ...source.querySelectorAll<SVGElement>("*")];
+  const cloneNodes = [clone, ...clone.querySelectorAll<SVGElement>("*")];
+  const properties = [
+    "fill", "fill-opacity", "stroke", "stroke-width", "stroke-dasharray",
+    "stroke-linecap", "stroke-linejoin", "opacity", "font-family", "font-size",
+    "font-weight", "text-anchor", "dominant-baseline",
+  ];
+  sourceNodes.forEach((node, index) => {
+    const target = cloneNodes[index];
+    const computed = window.getComputedStyle(node);
+    properties.forEach((property) => {
+      const value = computed.getPropertyValue(property);
+      if (value) target.style.setProperty(property, value);
+    });
+  });
+  return clone;
+}
+
+async function rasterizeTechnicalSvg(source: SVGSVGElement): Promise<PdfTechnicalDrawing> {
+  const viewBox = source.viewBox.baseVal;
+  const scale = 2.5;
+  const width = Math.max(1, Math.round(viewBox.width * scale));
+  const height = Math.max(1, Math.round(viewBox.height * scale));
+  const svg = inlineSvgStyles(source);
+  svg.setAttribute("width", String(viewBox.width));
+  svg.setAttribute("height", String(viewBox.height));
+  const url = URL.createObjectURL(new Blob(
+    [new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" },
+  ));
+  try {
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Technische SVG-Darstellung konnte nicht geladen werden."));
+      image.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Technische Darstellung konnte nicht gerendert werden.");
+    context.fillStyle = window.getComputedStyle(document.documentElement)
+      .getPropertyValue("--surface").trim() || "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    return { dataUrl: canvas.toDataURL("image/png"), width, height };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function capturePdfTechnicalDrawings(): Promise<Record<PdfTechnicalView, PdfTechnicalDrawing>> {
+  const entries = await Promise.all(PDF_VIEWS.map(async (view) => {
+    const svg = document.querySelector<SVGSVGElement>(`[data-pdf-view="${view}"] svg`);
+    if (!svg) throw new Error(`Technische PDF-Darstellung fehlt: ${view}.`);
+    return [view, await rasterizeTechnicalSvg(svg)] as const;
+  }));
+  return Object.fromEntries(entries) as Record<PdfTechnicalView, PdfTechnicalDrawing>;
+}
 
 function Ring({ value }: { value: number }) {
   const pct = Math.max(0, Math.min(100, value * 100));
@@ -141,7 +216,10 @@ function Chat({
   const [text, setText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [follow, setFollow] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const copyFeedbackTimer = useRef<number | undefined>(undefined);
   const scroll = useRef<HTMLDivElement>(null);
+  useEffect(() => () => window.clearTimeout(copyFeedbackTimer.current), []);
   useEffect(() => {
     if (follow)
       scroll.current?.scrollTo({
@@ -221,6 +299,9 @@ function Chat({
           )
           .join("\n\n");
     await navigator.clipboard.writeText(content);
+    setCopied(true);
+    window.clearTimeout(copyFeedbackTimer.current);
+    copyFeedbackTimer.current = window.setTimeout(() => setCopied(false), 1300);
   };
   const selectProvider = async (provider: "local" | "openai") => {
     if (!window.pywebview || provider === snapshot.agentStatus.provider) return;
@@ -236,17 +317,35 @@ function Chat({
         </h2>
         <div className="chat-head-actions">
           <div className="model-control" aria-label="KI-Modell auswählen">
-            <span>KI-Modell</span>
-            <div className="model-toggle">
-              <button className={snapshot.agentStatus.provider === "local" ? "active" : ""} onClick={() => void selectProvider("local")}>Lokal</button>
-              <button className={snapshot.agentStatus.provider === "openai" ? "active" : ""} onClick={() => void selectProvider("openai")}>OpenAI</button>
+            <div className="model-control-row">
+              <span>KI-Modell</span>
+              <div className="model-toggle">
+                <button className={snapshot.agentStatus.provider === "local" ? "active" : ""} onClick={() => void selectProvider("local")}>Lokal</button>
+                <button className={snapshot.agentStatus.provider === "openai" ? "active" : ""} onClick={() => void selectProvider("openai")}>OpenAI</button>
+              </div>
+              <button
+                className={`copy-chat${copied ? " copied" : ""}`}
+                onClick={() => void copy()}
+                aria-label={copied ? "Kopiert" : "Chat kopieren"}
+                title={copied ? "Kopiert" : "Chat kopieren"}
+              >
+                {copied ? (
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m5 12 4 4L19 6" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="8" y="8" width="11" height="11" rx="2" />
+                    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                  </svg>
+                )}
+              </button>
             </div>
             <small className={snapshot.agentStatus.available ? "available" : "unavailable"}>
               {snapshot.agentStatus.available ? "●" : "○"} {snapshot.agentStatus.detail}
               {snapshot.agentStatus.provider === "local" ? " · Daten bleiben auf diesem Gerät" : ""}
             </small>
           </div>
-          <button onClick={copy}>Chat kopieren</button>
         </div>
       </div>
       <div
@@ -457,6 +556,88 @@ function BestSolution({ snapshot }: { snapshot: UISnapshot }) {
         </div>
       )}
     </section>
+  );
+}
+
+function EngineeringAssessment({ snapshot }: { snapshot: UISnapshot }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sections, setSections] = useState<{ title: string; content: string }[] | null>(null);
+  const assessment = snapshot.engineeringAssessment;
+  if (!assessment) return null;
+  const loadReport = async () => {
+    setOpen(true);
+    if (sections || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      if (!window.pywebview) {
+        setError("KI-Auswertung derzeit nicht verfügbar.");
+        return;
+      }
+      const result = await window.pywebview.api.create_engineering_assessment();
+      if (!result.ok || !result.report) setError(result.error || "KI-Auswertung derzeit nicht verfügbar.");
+      else setSections(result.report.sections);
+    } catch {
+      setError("KI-Auswertung derzeit nicht verfügbar.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <>
+      <section className="why assessment-card card">
+        <div className="assessment-heading">
+          <h2>KI-AUSWERTUNG &amp; EMPFEHLUNG</h2>
+          <span className={assessment.suitable ? "assessment-ok" : "assessment-fail"}>
+            {assessment.suitable ? "✓" : "!"} {assessment.status}
+          </span>
+        </div>
+        <dl className="assessment-facts">
+          <div><dt>Max. Ausnutzung</dt><dd>{assessment.utilizationPercent.toLocaleString("de-DE")} %</dd></div>
+          <div><dt>Maßgebend</dt><dd>{assessment.governingCheck}</dd></div>
+        </dl>
+        <p>{assessment.summary}</p>
+        <p className="assessment-recommendation"><b>Empfehlung:</b> {assessment.recommendation}</p>
+        <button className="assessment-open" onClick={() => void loadReport()}>
+          Ausführliche technische Bewertung
+        </button>
+      </section>
+      {open && (
+        <div className="assessment-overlay" role="presentation" onMouseDown={(e) => {
+          if (e.target === e.currentTarget) setOpen(false);
+        }}>
+          <section className="assessment-report" role="dialog" aria-modal="true" aria-labelledby="assessment-title">
+            <header>
+              <div>
+                <small>DETERMINISTISCH ABGESICHERTE KI-AUSWERTUNG</small>
+                <h2 id="assessment-title">KI-Auswertung &amp; Rechenkern Feedback</h2>
+              </div>
+              <button onClick={() => setOpen(false)} aria-label="Bewertung schließen">×</button>
+            </header>
+            {loading && (
+              <div className="assessment-loading" role="status">
+                <span className="assessment-spinner" />
+                <h3>KI analysiert die Berechnungsergebnisse …</h3>
+                <p>Nachweise geladen · Varianten werden verglichen · Technische Bewertung wird erstellt</p>
+              </div>
+            )}
+            {!loading && error && <div className="assessment-unavailable">{error}</div>}
+            {!loading && sections && (
+              <div className="assessment-sections">
+                {sections.map((section, index) => (
+                  <article key={section.title}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div><h3>{section.title}</h3><p>{section.content}</p></div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1028,8 +1209,15 @@ function App() {
   };
   const createReport = async (type: "calculation" | "variants") => {
     if (!window.pywebview) { setError("Python-Backend nicht verbunden."); return; }
+    if (!snapshot) { setError("Für den Bericht ist noch kein Anwendungsstand verfügbar."); return; }
+    if (!snapshot.connectionGeometry) { setError("Für den Bericht fehlt die aktuelle Geometrie."); return; }
     try {
-      const result = await window.pywebview.api.create_pdf_report({ type });
+      const technicalDrawings = await capturePdfTechnicalDrawings();
+      const result = await window.pywebview.api.create_pdf_report({
+        type,
+        geometrySnapshot: snapshot.connectionGeometry,
+        technicalDrawings,
+      });
       if (result.status === "cancelled") return;
       if (result.status === "error") setError(result.message || "Der Bericht konnte nicht erstellt werden.");
       else if (result.path) { setError(null); setLastPdf(result.path); }
@@ -1135,6 +1323,7 @@ function App() {
         }
       />
       <Sidebar active={active} setActive={setActive} />
+      <PdfDrawingSource model={snapshot.connectionGeometry} />
       {mode === "KI Workspace" && (
         <>
           {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(null)}>Schließen</button></div>}
@@ -1159,10 +1348,7 @@ function App() {
                 onPreview={setSelected}
                 onAdopt={adoptVariant}
               />
-              <section className="why card">
-                <h2>KI-EINSCHÄTZUNG</h2>
-                <p>{snapshot.recommendation}</p>
-              </section>
+              <EngineeringAssessment snapshot={snapshot} />
               <section className="sources card">
                 <h2>QUELLEN</h2>
                 {snapshot.sources.length ? snapshot.sources.slice(0, 3).map((source) => <p key={source}>{source}</p>) : <p>Noch keine berechnungsspezifischen Quellen.</p>}
@@ -1204,7 +1390,7 @@ function App() {
           ◷ Letzter Snapshot <b>aktuell</b>
         </span>
         <span>
-          ● Engineering-Kern <b>aktiv</b>
+          ● Rechenkern <b>aktiv</b>
         </span>
         <button className="reset-action" onClick={resetDesign}>Neuer Entwurf</button>
         <button disabled={!snapshot.currentResult} onClick={() => createReport("calculation")}>PDF-Bericht erstellen</button>

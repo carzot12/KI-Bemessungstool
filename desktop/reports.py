@@ -3,6 +3,8 @@ from __future__ import annotations
 """Presentation reports built only from serialized deterministic results."""
 
 from datetime import datetime
+from base64 import b64decode
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +13,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import (
-    Flowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
-)
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 RED = colors.HexColor("#B20D30")
@@ -54,161 +54,18 @@ def _validated_geometry(snapshot: dict[str, Any]) -> dict[str, Any]:
     return geometry
 
 
-class TechnicalGeometryDrawing(Flowable):
-    """Side view and section generated directly from ConnectionGeometry."""
-
-    def __init__(self, geometry: dict[str, Any], width: float = 170 * mm) -> None:
-        super().__init__()
-        self.geometry = geometry
-        self.width = width
-        self.height = 65 * mm
-
-    def draw(self) -> None:
-        c = self.canv
-        g = self.geometry
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(0, self.height - 8, "Seitenansicht - tatsächliche Snapshot-Geometrie")
-        side_y = self.height - 57 * mm
-        side_h = 37 * mm
-        seam = self.width / 2
-        half = min(60 * mm, self.width / 2 - 20 * mm)
-        sx = half / g["connectionLengthMm"]
-        sy = side_h / g["sectionHeightMm"]
-        c.setFillColor(colors.HexColor("#E9DFD0"))
-        c.setStrokeColor(colors.HexColor("#34383D"))
-        c.rect(seam - half, side_y, half, side_h, fill=1, stroke=1)
-        c.rect(seam, side_y, half, side_h, fill=1, stroke=1)
-        plate_left = seam - g["plateLengthMm"] / 2 * sx
-        plate_width = g["plateLengthMm"] * sx
-        plate_y = side_y + (g["sectionHeightMm"] - g["plateBottomMm"]) * sy
-        c.setDash(4, 3)
-        c.rect(plate_left, plate_y, plate_width, g["plateHeightMm"] * sy, fill=0, stroke=1)
-        c.setDash()
-        for point in [*g["dowelPositionsLeftMm"], *g["dowelPositionsRightMm"]]:
-            c.circle(seam + point["x"] * sx,
-                     side_y + (g["sectionHeightMm"] - point["y"]) * sy,
-                     1.6, fill=0, stroke=1)
-        # Horizontal dimension chain: timber and steel distances remain separate.
-        dim_y = side_y + side_h + 5
-        columns = g["columnPositionsMm"]
-        dimension_points = [seam, *[seam + value * sx for value in columns], plate_left + plate_width]
-        for x in dimension_points:
-            c.line(x, side_y + side_h, x, dim_y + 2)
-        for x1, x2 in zip(dimension_points, dimension_points[1:]):
-            c.line(x1, dim_y, x2, dim_y)
-            c.line(x1 - 1.5, dim_y - 1.5, x1 + 1.5, dim_y + 1.5)
-            c.line(x2 - 1.5, dim_y - 1.5, x2 + 1.5, dim_y + 1.5)
-        # Vertical timber chain uses actual row coordinates and actual residual edge.
-        dim_x = seam + half + 5
-        row_y = [side_y + (g["sectionHeightMm"] - value) * sy for value in g["rowPositionsMm"]]
-        vertical_points = [side_y + side_h, *row_y, side_y]
-        for y in vertical_points:
-            c.line(seam + half, y, dim_x + 2, y)
-        for y1, y2 in zip(vertical_points, vertical_points[1:]):
-            c.line(dim_x, y1, dim_x, y2)
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica", 6.5)
-        c.drawCentredString(seam, side_y + side_h + 9,
-                            f"a3,t={_fmt(g['a3tMm'])}  |  a1={_fmt(g['a1Mm'])}  |  e1={_fmt(g['e1Mm'])} mm")
-        c.drawRightString(self.width, side_y + side_h - 5,
-                          f"oben={_fmt(g['topTimberEdgeDistanceMm'])} mm")
-        c.drawRightString(self.width, side_y + side_h / 2,
-                          f"a2={_fmt(g['a2Mm'])} mm")
-        c.drawRightString(self.width, side_y + 2,
-                          f"unten={_fmt(g['bottomTimberEdgeDistanceMm'])} mm; e2={_fmt(g['e2Mm'])} mm")
-        # Symmetric red design-force arrows.
-        c.setStrokeColor(RED); c.setFillColor(RED); c.setLineWidth(1.2)
-        arrow_y = side_y + side_h / 2
-        for start, end in ((seam - half, seam - half - 10 * mm),
-                           (seam + half, seam + half + 10 * mm)):
-            c.line(start, arrow_y, end, arrow_y)
-            direction = -1 if end < start else 1
-            c.line(end, arrow_y, end - direction * 3 * mm, arrow_y + 2 * mm)
-            c.line(end, arrow_y, end - direction * 3 * mm, arrow_y - 2 * mm)
-        c.setFillColor(colors.black); c.setFont("Helvetica", 6.5)
-        c.drawString(0, arrow_y + 10 * mm, "Ft,d")
-        c.drawRightString(self.width, arrow_y + 10 * mm, "Ft,d")
-
-
-class TopViewDrawing(Flowable):
-    """Top view with the exact cross-section layer stack from ConnectionGeometry."""
-
-    def __init__(self, geometry: dict[str, Any], width: float = 170 * mm) -> None:
-        super().__init__()
-        self.geometry = geometry
-        self.width = width
-        self.height = 72 * mm
-
-    def draw(self) -> None:
-        c, g = self.canv, self.geometry
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(0, self.height - 8, "Draufsicht - Schichtaufbau und Duebellinien")
-        x0, y0 = 12 * mm, 13 * mm
-        body_w, body_h = self.width - 24 * mm, 38 * mm
-        c.setFillColor(colors.HexColor("#E9DFD0"))
-        c.setStrokeColor(colors.HexColor("#34383D"))
-        c.rect(x0, y0, body_w, body_h, fill=1, stroke=1)
-        cursor = y0
-        for index, layer in enumerate(g["crossSectionLayersMm"]):
-            layer_h = body_h * layer / g["sectionWidthMm"]
-            if index % 2:
-                c.setFillColor(colors.HexColor("#8B9095"))
-                c.rect(x0, cursor, body_w, layer_h, fill=1, stroke=1)
-            cursor += layer_h
-        seam = x0 + body_w / 2
-        c.setStrokeColor(RED)
-        c.setLineWidth(0.7)
-        scale_x = body_w / (2 * g["connectionLengthMm"])
-        for x in g["columnPositionsMm"]:
-            for sign in (-1, 1):
-                px = seam + sign * x * scale_x
-                c.line(px, y0 - 2, px, y0 + body_h + 2)
-        c.setStrokeColor(colors.black)
-        c.setFont("Helvetica", 7)
-        c.drawCentredString(self.width / 2, 3 * mm,
-                            "b = " + _fmt(g["sectionWidthMm"]) + " mm; Schichten: " +
-                            " | ".join(_fmt(v) for v in g["crossSectionLayersMm"]) + " mm")
-
-
-class SectionDrawing(Flowable):
-    """True b:h section, including actual top/bottom row distances."""
-
-    def __init__(self, geometry: dict[str, Any], width: float = 170 * mm) -> None:
-        super().__init__()
-        self.geometry = geometry
-        self.width = width
-        self.height = 175 * mm
-
-    def draw(self) -> None:
-        c, g = self.canv, self.geometry
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(0, self.height - 10, "Schnitt A-A - massstaebliches Seitenverhaeltnis b:h")
-        max_h = 120 * mm
-        scale = min(100 * mm / g["sectionWidthMm"], max_h / g["sectionHeightMm"])
-        sw, sh = g["sectionWidthMm"] * scale, g["sectionHeightMm"] * scale
-        x0, y0 = (self.width - sw) / 2, 24 * mm
-        c.setFillColor(colors.HexColor("#E9DFD0")); c.setStrokeColor(colors.black)
-        c.rect(x0, y0, sw, sh, fill=1, stroke=1)
-        cursor = x0
-        for index, layer in enumerate(g["crossSectionLayersMm"]):
-            lw = layer * scale
-            if index % 2:
-                c.setFillColor(colors.HexColor("#8B9095"))
-                c.rect(cursor, y0 + (g["sectionHeightMm"] - g["plateBottomMm"]) * scale,
-                       lw, g["plateHeightMm"] * scale, fill=1, stroke=1)
-            cursor += lw
-        c.setStrokeColor(RED); c.setLineWidth(0.7)
-        for row in g["rowPositionsMm"]:
-            y = y0 + (g["sectionHeightMm"] - row) * scale
-            c.line(x0 - 2, y, x0 + sw + 2, y)
-        c.setFillColor(colors.black); c.setFont("Helvetica", 7.5)
-        c.drawCentredString(self.width / 2, 14 * mm,
-                            f"b={_fmt(g['sectionWidthMm'])} mm: " + " | ".join(_fmt(v) for v in g["crossSectionLayersMm"]))
-        c.drawRightString(x0 - 5, y0 + sh / 2, f"h={_fmt(g['sectionHeightMm'])} mm")
-        c.drawString(x0 + sw + 5, y0 + sh - 4,
-                     f"oben={_fmt(g['topTimberEdgeDistanceMm'])} mm")
-        c.drawString(x0 + sw + 5, y0 + sh / 2, f"a2={_fmt(g['a2Mm'])} mm")
-        c.drawString(x0 + sw + 5, y0 + 2, f"unten={_fmt(g['bottomTimberEdgeDistanceMm'])} mm")
+def _technical_image(drawing: dict[str, Any], max_width: float, max_height: float) -> Image:
+    data_url = str(drawing.get("dataUrl") or "")
+    prefix = "data:image/png;base64,"
+    if not data_url.startswith(prefix):
+        raise ValueError("Technische UI-Darstellung ist kein PNG-Datenbild.")
+    raw = b64decode(data_url[len(prefix):], validate=True)
+    image = Image(BytesIO(raw))
+    scale = min(max_width / image.imageWidth, max_height / image.imageHeight)
+    image.drawWidth = image.imageWidth * scale
+    image.drawHeight = image.imageHeight * scale
+    image.hAlign = "CENTER"
+    return image
 
 
 def _fmt(value: Any) -> str:
@@ -220,17 +77,21 @@ def _fmt(value: Any) -> str:
 def create_report(
     snapshot: dict[str, Any], report_type: str, output_dir: Path,
     filename: str | None = None,
+    technical_drawings: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     result = snapshot.get("currentResult")
     if not result:
         raise ValueError("Für einen Bericht ist zuerst eine Berechnung erforderlich.")
     geometry = _validated_geometry(snapshot)
+    expected_views = {"side", "top", "section", "isometric"}
+    if not isinstance(technical_drawings, dict) or set(technical_drawings) != expected_views:
+        raise ValueError("Für den Bericht werden alle vier technischen UI-Darstellungen benötigt.")
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "variantenbericht" if report_type == "variants" else "berechnungsbericht"
-    target = output_dir / (filename or f"KI-Bemessungstool_{suffix}.pdf")
+    target = output_dir / (filename or f"KI-Tool_{suffix}.pdf")
     doc = SimpleDocTemplate(str(target), pagesize=A4, rightMargin=18 * mm,
                             leftMargin=18 * mm, topMargin=17 * mm,
-                            bottomMargin=17 * mm, title="KI-Bemessungstool",
+                            bottomMargin=17 * mm, title="KI-Tool",
                             author="holz.bau forschungs gmbh")
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="ReportTitle", parent=styles["Title"],
@@ -327,13 +188,19 @@ def create_report(
                   f"{_fmt(geometry['topTimberEdgeDistanceMm'])} mm. e1 und e2 sind dokumentierte "
                   "Stahlblechrandabstände; der Rechenkern führt dafür keine separate normative Mindestwertprüfung.", body),
 
-              PageBreak(), *title("Technische Zeichnung · Seiten- und Draufsicht",
-              "Gewählte Variante / Favorit. Verdeckte Bleche sind gestrichelt; rote Linien kennzeichnen Dübelflucht bzw. Kraftrichtung."),
-              TechnicalGeometryDrawing(geometry), Spacer(1, 3 * mm), TopViewDrawing(geometry),
+              PageBreak(), *title("Technische Darstellungen · Seitenansicht und Draufsicht",
+              "Direkt aus denselben React-SVGs und demselben ConnectionGeometry-Snapshot wie die Benutzeroberfläche."),
+              Paragraph("Seitenansicht", styles["Heading2"]),
+              _technical_image(technical_drawings["side"], 170 * mm, 72 * mm),
+              Spacer(1, 3 * mm), Paragraph("Draufsicht", styles["Heading2"]),
+              _technical_image(technical_drawings["top"], 170 * mm, 60 * mm),
 
-              PageBreak(), *title("Technische Zeichnung · Schnitt A-A",
-              "Das Seitenverhältnis entspricht dem realen Querschnitt b:h; Schichten und Reihen stammen aus derselben Geometrie."),
-              SectionDrawing(geometry),
+              PageBreak(), *title("Technische Darstellungen · Schnitt und 3D",
+              "Bemaßungen, Beschriftungen, Orientierung und Proportionen entsprechen unmittelbar der Oberfläche."),
+              Paragraph("Schnitt A-A", styles["Heading2"]),
+              _technical_image(technical_drawings["section"], 170 * mm, 92 * mm),
+              Spacer(1, 3 * mm), Paragraph("3D-Darstellung", styles["Heading2"]),
+              _technical_image(technical_drawings["isometric"], 170 * mm, 72 * mm),
     ]
     check_rows = [["Nachweis", "Ed [kN]", "Rd [kN]", "Ausnutzung", "Status"]]
     governing_row = None
@@ -375,7 +242,7 @@ def create_report(
         canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D9DEE5"))
         canvas.line(18 * mm, 12 * mm, A4[0] - 18 * mm, 12 * mm)
         canvas.setFont("Helvetica", 7); canvas.setFillColor(colors.HexColor("#666666"))
-        canvas.drawString(18 * mm, 8 * mm, "KI-Bemessungstool · technischer Entwurfsbericht")
+        canvas.drawString(18 * mm, 8 * mm, "KI-Tool · technischer Entwurfsbericht")
         canvas.drawRightString(A4[0] - 18 * mm, 8 * mm, f"Seite {document.page}")
         canvas.restoreState()
 

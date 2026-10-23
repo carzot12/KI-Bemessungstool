@@ -40,6 +40,7 @@ ctk.set_default_color_theme("blue")
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 LOGO_PATH = ASSET_DIR / "logo.png"
+SPLASH_LOGO_PATH = ASSET_DIR / "widget_1.png"
 
 
 class SplashScreen(ctk.CTkToplevel):
@@ -65,11 +66,11 @@ class SplashScreen(ctk.CTkToplevel):
         )
         card.pack(fill="both", expand=True, padx=3, pady=3)
 
-        logo = Image.open(LOGO_PATH)
+        logo = Image.open(SPLASH_LOGO_PATH)
         self.logo_image = ctk.CTkImage(
             light_image=logo,
             dark_image=logo,
-            size=(390, 76),
+            size=(150, round(150 * logo.height / logo.width)),
         )
         ctk.CTkLabel(card, text="", image=self.logo_image).pack(pady=(48, 24))
         ctk.CTkLabel(

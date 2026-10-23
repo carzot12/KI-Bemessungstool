@@ -197,18 +197,7 @@ class StabduebelResult:
             "",
             f"Maßgebend: {self.governing_check.name}",
             f"Ausnutzung: {self.governing_check.utilization:.2f}",
-            (
-                "RECHNERISCHE TEILNACHWEISE: "
-                if self.input.number_of_plates_ns == 1
-                else "GESAMTNACHWEIS: "
-            ) + ("ERFÜLLT" if self.passed else "NICHT ERFÜLLT"),
-            *(
-                [
-                    "ÖSTERREICHISCHE GESAMTZULÄSSIGKEIT: NEIN "
-                    "(nur 2 Scherflächen)"
-                ]
-                if self.input.number_of_plates_ns == 1 else []
-            ),
+            "GESAMTNACHWEIS: " + ("ERFÜLLT" if self.passed else "NICHT ERFÜLLT"),
             "=" * 72,
         ])
         return "\n".join(lines)

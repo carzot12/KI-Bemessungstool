@@ -66,7 +66,8 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                 "WHAT_IF", "COMPARE", "MAXIMUM_LOAD", "TARGET_UTILIZATION",
                 "EXPLAIN_RESULT", "EXPLAIN_CHECK", "RECOMMEND_IMPROVEMENT",
                 "ASK_CURRENT_STATE", "UNDO_LAST_CHANGE",
-                "GENERAL_ENGINEERING_QUESTION", "CLARIFICATION_REQUIRED",
+                "GENERAL_ENGINEERING_QUESTION", "SMALLTALK",
+                "CLARIFICATION_REQUIRED",
             ],
         },
         "action": {
@@ -302,6 +303,7 @@ class StabduebelAssistant:
         return self.system_prompt.split(marker, 1)[0].rstrip()
 
     def respond(self, user_text: str) -> AssistantReply:
+        routed_intent = self.route_message_intent(user_text)
         self.last_runtime_trace = {
             "USER_TEXT": user_text,
             "MODE": f"{self.llm_provider.upper()}_OR_UNTESTED",
@@ -323,7 +325,9 @@ class StabduebelAssistant:
         if self.llm_provider == "local" and not self._force_local:
             state_before_local_input = self.copy_state()
             self._secure_local_explicit_input(user_text)
-            local_guard_intent = str(self._fallback_extract(user_text).get("intent") or "")
+            local_guard_intent = routed_intent or str(
+                self._fallback_extract(user_text).get("intent") or ""
+            )
             local_guard_state = (
                 self.copy_state()
                 if local_guard_intent == "NEW_DESIGN"
@@ -357,6 +361,18 @@ class StabduebelAssistant:
                     self._provider_error_message(), self.state.last_result, False,
                     self._recognized_parameters(self.state.last_result), self.llm_error,
                 )
+            if routed_intent == "SMALLTALK":
+                self.conversation.last_intent = "SMALLTALK"
+                self.conversation.last_action = "CHAT"
+                self.last_runtime_trace.update(INTENT="SMALLTALK", ACTION="CHAT")
+                guarded_text = self._guard_smalltalk_reply(user_text, reply.text)
+                if guarded_text != reply.text:
+                    reply = AssistantReply(
+                        guarded_text, reply.result, reply.used_llm,
+                        reply.recognized_parameters, reply.interpretation, reply.debug,
+                    )
+                    if self.message_history and self.message_history[-1].get("role") == "assistant":
+                        self.message_history[-1]["content"] = guarded_text
             if (
                 self.llm_provider == "local"
                 and local_guard_intent in {
@@ -380,6 +396,85 @@ class StabduebelAssistant:
         )
         self._log_runtime_trace()
         return reply
+
+    @classmethod
+    def route_message_intent(cls, user_text: str) -> str | None:
+        """Recognize unambiguously non-technical conversation before LLM routing."""
+        normalized = cls._normalize_common_language(user_text.lower().strip())
+        normalized = re.sub(r"[!?.,;:]+$", "", normalized).strip()
+        smalltalk_patterns = (
+            r"(?:guten\s+(?:tag|morgen|abend)|hallo|hi|hey|servus|grüß\s+gott)",
+            r"(?:wie\s+geht(?:'s|\s+es)?\s+dir|wie\s+gehts\s+dir)",
+            r"(?:danke|vielen\s+dank|besten\s+dank|dankeschön)",
+            r"(?:was\s+kannst\s+du(?:\s+eigentlich)?|wobei\s+kannst\s+du\s+helfen)",
+            r"(?:wer\s+bist\s+du|was\s+bist\s+du)",
+        )
+        return (
+            "SMALLTALK"
+            if any(re.fullmatch(pattern, normalized) for pattern in smalltalk_patterns)
+            else None
+        )
+
+    def _smalltalk_fallback_text(self, user_text: str) -> str:
+        normalized = self._normalize_common_language(user_text.lower().strip())
+        has_design = self.state.last_result is not None
+        if re.search(r"\b(?:was\s+kannst|wobei\s+kannst)\b", normalized):
+            return (
+                "Ich unterstütze dich bei der Bemessung und Optimierung zugbeanspruchter "
+                "Stabdübel-Zuglaschenstöße: Du kannst Randbedingungen natürlich formulieren, "
+                "berechnete Varianten verändern oder vergleichen und Fragen zu den vom "
+                "deterministischen Engineering-Kern ermittelten Nachweisen stellen."
+            )
+        if re.search(r"\b(?:wer|was)\s+bist\s+du\b", normalized):
+            return (
+                "Ich bin ein professioneller Engineering-Assistent für Holzbauverbindungen; "
+                "ich führe dich natürlich durch den Entwurf, während alle technischen "
+                "Ergebnisse aus dem deterministischen Rechenkern stammen."
+            )
+        if re.search(r"wie\s+geht", normalized):
+            return (
+                "Danke, gut! Ich bin bereit, den aktuellen Entwurf weiter zu untersuchen."
+                if has_design else
+                "Danke, gut! Wie kann ich dir bei einer Holzbauverbindung helfen?"
+            )
+        if re.search(r"danke|dankeschön", normalized):
+            return (
+                "Gerne! Wenn du möchtest, können wir den aktuellen Entwurf weiter optimieren "
+                "oder eine berechnete Variante vergleichen."
+                if has_design else "Gerne!"
+            )
+        return (
+            "Guten Tag! Wie kann ich dich beim aktuellen Entwurf unterstützen?"
+            if has_design else
+            "Guten Tag! Wie kann ich dir helfen? Du kannst mir zum Beispiel Last, "
+            "Holzfestigkeitsklasse und gewünschte Verbindung nennen."
+        )
+
+    def _guard_smalltalk_reply(self, user_text: str, candidate: str) -> str:
+        """Keep natural LLM wording, but constrain scope and presentation quality."""
+        normalized = self._normalize_common_language(user_text.lower().strip())
+        word_count = len(candidate.split())
+        invalid = (
+            not candidate.strip()
+            or word_count > 45
+            or bool(re.search(r"\b(?:Ihnen|Sie|Ihr(?:e|en|er)?)\b", candidate))
+        )
+        if re.search(r"wie\s+geht", normalized):
+            invalid = invalid or bool(
+                re.search(r"keine\s+emotionen|ki-modell", candidate, re.I)
+                or not re.search(r"holzbau|verbindung|entwurf", candidate, re.I)
+            )
+        elif re.search(r"danke|dankeschön", normalized):
+            invalid = invalid or word_count > 18
+        elif re.search(r"\b(?:guten|hallo|hi|hey|servus|grüß)\b", normalized):
+            invalid = invalid or word_count > 25
+        elif re.search(r"\b(?:was\s+kannst|wobei\s+kannst)\b", normalized):
+            invalid = (
+                invalid
+                or "determin" not in candidate.casefold()
+                or not re.search(r"stabdübel|zuglaschenstoß", candidate, re.I)
+            )
+        return self._smalltalk_fallback_text(user_text) if invalid else candidate.strip()
 
     def _secure_local_explicit_input(self, user_text: str) -> None:
         """Persist explicit local-chat values even if a small model skips its tool."""
@@ -610,6 +705,13 @@ class StabduebelAssistant:
             re.IGNORECASE,
         ):
             self.state.autonomy_mode = True
+        if (
+            extracted.get("number_of_plates_ns") is not None
+            and re.search(r"\b(?:geht|möglich|finde|such|lösung|variante)\b", user_text, re.IGNORECASE)
+        ):
+            self.state.autonomy_mode = True
+            if self.state.optimization_goal is None:
+                self.state.optimization_goal = "BALANCED_DESIGN"
         self.conversation.last_intent = intent
         self.conversation.last_action = self._validated_action(extracted, intent)
         self.last_runtime_trace.update(
@@ -679,6 +781,16 @@ class StabduebelAssistant:
             )
 
         if intent == "COMPARE":
+            if re.search(
+                r"(?:ein(?:em|en)?|1).*zwei|(?:zwei|2).*ein(?:em|en)?",
+                user_text,
+                re.IGNORECASE,
+            ) and re.search(r"stahlblech|blech", user_text, re.IGNORECASE):
+                text = self._compare_plate_topologies()
+                return AssistantReply(
+                    text, self.state.last_result, used_llm,
+                    self._recognized_parameters(self.state.last_result), text,
+                )
             text = self._compare_requested_variants(user_text)
             return AssistantReply(
                 text,
@@ -689,20 +801,6 @@ class StabduebelAssistant:
             )
 
         state_before_change = deepcopy(self.state)
-        if (
-            extracted.get("number_of_plates_ns") == 1
-            and state_before_change.last_result is not None
-        ):
-            text = (
-                "Unter dem aktuell gewählten österreichischen Normprofil ist "
-                "die Ausführung mit nur einem innenliegenden Stahlblech nicht "
-                "normkonform: Sie besitzt zwei Scherflächen, gefordert sind "
-                "mindestens vier. Der bestehende zulässige Favorit bleibt unverändert."
-            )
-            return AssistantReply(
-                text, state_before_change.last_result, used_llm,
-                self._recognized_parameters(state_before_change.last_result), text,
-            )
         self._apply(extracted)
         self.state.previous_technical_state = dict(state_before_change.parameters)
         self.state.pending_clarification = None
@@ -819,21 +917,6 @@ class StabduebelAssistant:
             FEASIBLE_VARIANT_COUNT=optimization.feasible_count,
         )
         if optimization.selected is None:
-            if (
-                extracted.get("number_of_plates_ns") == 1
-                and state_before_change.last_result is not None
-            ):
-                self.state = state_before_change
-                text = (
-                    "Unter dem aktuell gewählten österreichischen Normprofil ist "
-                    "die Ausführung mit nur einem innenliegenden Stahlblech nicht "
-                    "normkonform: Sie besitzt zwei Scherflächen, gefordert sind "
-                    "mindestens vier. Der bestehende zulässige Favorit bleibt unverändert."
-                )
-                return AssistantReply(
-                    text, self.state.last_result, used_llm,
-                    self._recognized_parameters(self.state.last_result), text,
-                )
             displayed = min(
                 optimization.evaluated,
                 key=lambda item: (
@@ -914,6 +997,52 @@ class StabduebelAssistant:
             self._recognized_parameters(selected.result),
             interpretation,
         )
+
+    def _compare_plate_topologies(self) -> str:
+        if self._missing_required_parameters():
+            return self._missing_parameter_question(self._missing_required_parameters())
+        base = self._build_input()
+        fixed = set(self.state.fixed_parameters) - {
+            "number_of_plates_ns", "side_thickness_t1_mm", "middle_thickness_t2_mm",
+        }
+        comparison = optimize_stabduebel(
+            base, fixed_parameters=fixed,
+            max_utilization=self.state.max_utilization,
+            min_utilization=self.state.min_utilization,
+            minimize_fasteners=self.state.minimize_fasteners,
+            maximize_utilization=self.state.maximize_utilization,
+            optimization_goal=self.state.optimization_goal,
+        )
+        feasible = [
+            item for item in comparison.evaluated
+            if item.validation.admissible and item.result.passed
+            and self.state.min_utilization <= item.result.governing_check.utilization <= self.state.max_utilization
+        ]
+        choices = {}
+        for plate_count in (1, 2):
+            candidates = [item for item in feasible if item.input.number_of_plates_ns == plate_count]
+            if self.state.optimization_goal == "LOWER_UTILIZATION":
+                key = lambda item: item.result.governing_check.utilization
+            else:
+                key = lambda item: (
+                    item.fastener_count, abs(item.result.governing_check.utilization - 0.85),
+                )
+            choices[plate_count] = min(candidates, key=key, default=None)
+        lines = ["Berechneter Vergleich der besten Varianten:"]
+        for plate_count in (1, 2):
+            item = choices[plate_count]
+            if item is None:
+                lines.append(f"{plate_count} Blech(e): keine Variante erfüllt alle implementierten Nachweise.")
+                continue
+            data = item.input
+            lines.append(
+                f"{plate_count} Blech(e): ts {data.plate_thickness_ts_mm:g} mm, "
+                f"Ø{data.dowel_diameter_d_mm:g} mm, {data.rows_parallel_n} × "
+                f"{data.rows_perpendicular_m} = {item.fastener_count}, "
+                f"η {item.result.governing_check.utilization * 100:.1f} %, "
+                f"maßgebend „{item.result.governing_check.name}“."
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _has_extracted_change(extracted: dict[str, Any]) -> bool:
@@ -1002,6 +1131,7 @@ class StabduebelAssistant:
             "ASK_CURRENT_STATE": "SHOW_STATE",
             "UNDO_LAST_CHANGE": "UNDO",
             "GENERAL_ENGINEERING_QUESTION": "GENERAL_TECHNICAL_QUESTION",
+            "SMALLTALK": "CHAT",
             "CLARIFICATION_REQUIRED": "ASK_MISSING_PARAMETERS",
         }.get(intent, "CHAT")
 
@@ -1124,6 +1254,12 @@ class StabduebelAssistant:
             self.state.pending_state_proposal = None
             self.state.pending_clarification = None
             text = "Alles klar, ich habe den vorgeschlagenen Wert nicht übernommen."
+            return AssistantReply(text, self.state.last_result, False, interpretation=text)
+
+        if self.route_message_intent(user_text) == "SMALLTALK":
+            self.conversation.last_intent = "SMALLTALK"
+            self.conversation.last_action = "CHAT"
+            text = self._smalltalk_fallback_text(user_text)
             return AssistantReply(text, self.state.last_result, False, interpretation=text)
 
         autonomy_reply = re.fullmatch(
@@ -1615,7 +1751,10 @@ class StabduebelAssistant:
             ),
         }
 
-        if re.search(r"rückgängig|vorige\s+variante|letzte\s+änderung.*zurück", normalized):
+        if self.route_message_intent(text) == "SMALLTALK":
+            data["intent"] = "SMALLTALK"
+            data["action"] = "CHAT"
+        elif re.search(r"rückgängig|vorige\s+variante|letzte\s+änderung.*zurück", normalized):
             data["intent"] = "UNDO_LAST_CHANGE"
         elif re.search(r"wie\s*viel.*trägt.*(?:maximal|höchstens)|wie\s*viel.*hält.*(?:maximal|höchstens)|wie\s*viel.*(?:maximal|höchstens).*trägt|max(?:imal)?\s*last|wie\s*viel\s+(?:kn\s+)?geht|wieviel\s+(?:kn\s+)?geht|welche\s+maximallast", normalized):
             data["intent"] = "MAXIMUM_LOAD"
@@ -2185,6 +2324,16 @@ class StabduebelAssistant:
         ):
             value = extracted.get(key)
             if value is not None:
+                if key == "number_of_plates_ns":
+                    for thickness_key in (
+                        "side_thickness_t1_mm", "middle_thickness_t2_mm",
+                        "dowel_diameter_d_mm", "rows_parallel_n",
+                        "rows_perpendicular_m",
+                    ):
+                        if extracted.get(thickness_key) is None:
+                            self.state.parameters.pop(thickness_key, None)
+                            self.state.fixed_parameters.discard(thickness_key)
+                            self.state.parameter_provenance.pop(thickness_key, None)
                 self.state.parameters[key] = value
                 self.state.fixed_parameters.add(key)
                 self.state.parameter_provenance[key] = "USER_FIXED"
@@ -2787,11 +2936,11 @@ class StabduebelAssistant:
             )
         if re.search(r"vier.*scherfug|scherfug.*notwendig", normalized):
             return (
-                "Die implementierte österreichische Gesamtvalidierung verlangt für "
-                "diesen tragenden Stabdübelanschluss mindestens vier Scherflächen. "
-                "Der Ein-Blech-Fall mit zwei Scherfugen kann nach dem implementierten "
-                "EC5-Grundmodell rechnerisch untersucht werden, bleibt in der "
-                "ÖNORM-B-Gesamtbewertung aber nicht zulässig."
+                "Die Scherfugenzahl wird aus der tatsächlichen Topologie abgeleitet: "
+                "Ein innenliegendes Stahlblech ergibt zwei, zwei Bleche ergeben vier "
+                "Holz-Stahl-Grenzflächen. Beide unterstützten Fälle werden mit ihren "
+                "jeweiligen Rechenmodellen und allen aktuell implementierten "
+                "Nachweisen bewertet; eine pauschale Mindestzahl von vier wird nicht angesetzt."
             )
         if re.search(r"unterschied.*schnittig|ein-.*zweischnittig", normalized):
             return (
@@ -3239,13 +3388,6 @@ class StabduebelAssistant:
             f"η = {result.governing_check.utilization:.2f}.\n"
             f"Technisches Gesamtergebnis: {status}. {optimization.message}"
             f"{reasons}{closing}"
-            + (
-                "\nRechnerisch nach ÖNORM EN 1995-1-1, Gleichung (8.11), "
-                "untersucht, aber nach der österreichischen nationalen Ergänzung "
-                "für diesen tragenden Stabdübelanschluss nicht zulässig, da nur "
-                "2 Scherflächen vorhanden sind."
-                if data.number_of_plates_ns == 1 else ""
-            )
         )
 
     def _recognized_parameters(self, result: StabduebelResult | None = None) -> str:

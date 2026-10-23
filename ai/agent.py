@@ -445,7 +445,10 @@ class OllamaAgent:
             "role": "system",
             "content": self.assistant.agent_system_prompt + "\n\n"
                 "Nutze für jede technische Zahl und jede Berechnung zwingend die Engineering-Tools. "
-                "Erfinde keine Werte. Antworte kurz und natürlich auf Deutsch.",
+                "Erfinde keine Werte. Antworte kurz und natürlich auf Deutsch. "
+                "Bei eindeutigem Gruß, Dank oder persönlichem Smalltalk antworte in einem kurzen Satz "
+                "ohne Tool. Beschreibe Fähigkeiten nur innerhalb des tatsächlich implementierten "
+                "Stabdübel-Zuglaschenstoßes und nenne den deterministischen Engineering-Kern.",
         }, *self.assistant.message_history[:-1], {
             "role": "user",
             "content": f"ENGINEERING_CONTEXT_JSON:\n{context}\n\nUSER_MESSAGE:\n{user_text}",
@@ -458,11 +461,16 @@ class OllamaAgent:
                 text = str(message.get("content") or "").strip()
                 if not text:
                     raise RuntimeError("Das lokale Sprachmodell lieferte keine Antwort.")
+                smalltalk = self.assistant.route_message_intent(user_text) == "SMALLTALK"
                 # Small local models occasionally identify and store every
                 # parameter correctly but stop one step before the explicitly
                 # requested calculation. Complete that requested action only
                 # through the deterministic tool facade.
-                if self.tools.last_reply is None and not self.assistant._missing_required_parameters():
+                if (
+                    not smalltalk
+                    and self.tools.last_reply is None
+                    and not self.assistant._missing_required_parameters()
+                ):
                     objective = (
                         "MIN_FASTENER_COUNT"
                         if re.search(r"wenig|gering|minimum|minimal", user_text, re.I)
@@ -480,7 +488,7 @@ class OllamaAgent:
                             f"Die maßgebende Ausnutzung beträgt "
                             f"{result.governing_check.utilization * 100:.1f} %."
                         )
-                elif self.tools.last_reply is None:
+                elif not smalltalk and self.tools.last_reply is None:
                     missing = self.assistant._missing_required_parameters()
                     priority = [
                         item for item in missing

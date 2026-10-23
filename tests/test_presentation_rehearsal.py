@@ -24,16 +24,16 @@ def valid_bridge() -> DesktopBridge:
     return bridge
 
 
-def test_one_plate_rejection_preserves_valid_favorite() -> None:
+def test_one_plate_request_runs_kernel_and_selects_one_plate() -> None:
     bridge = valid_bridge()
-    before = bridge.assistant.state.last_result
     reply = bridge.assistant.execute_local_command(
         "Geht die Verbindung auch nur mit einem innenliegenden Stahlblech?"
     )
-    assert "nicht normkonform" in reply.text
-    assert "mindestens vier" in reply.text
-    assert bridge.assistant.state.last_result is before
-    assert bridge.assistant.state.parameters["number_of_plates_ns"] == 2
+    assert "nicht normkonform" not in reply.text
+    assert reply.result is not None
+    assert reply.result.input.number_of_plates_ns == 1
+    assert reply.result.input.shear_planes_s == 2
+    assert bridge.assistant.state.parameters["number_of_plates_ns"] == 1
 
 
 def test_reverse_capacity_and_ninety_percent_are_kernel_verified() -> None:
@@ -64,15 +64,10 @@ def test_selected_connection_summary_contains_result_without_recalculation() -> 
     assert bridge.assistant.state.last_result is before
 
 
-def test_bridge_keeps_non_design_action_text(monkeypatch) -> None:
+def test_bridge_keeps_capacity_action_text(monkeypatch) -> None:
     bridge = valid_bridge()
     local = bridge.assistant.execute_local_command
     monkeypatch.setattr(bridge.assistant, "respond", local)
-
-    rejected = bridge.send_message({
-        "text": "Geht die Verbindung auch nur mit einem innenliegenden Stahlblech?",
-    })
-    assert "nicht normkonform" in rejected["data"]["conversation"][-1]["content"]
 
     maximum = bridge.send_message({
         "text": "Wie viel Zugkraft hält diese Verbindung maximal aus?",

@@ -174,7 +174,7 @@ def test_compact_calculation_uses_same_state_and_conversation() -> None:
     assert snapshot["currentResult"] is not None
 
 
-def test_pdf_dialog_uses_pywebview_621_filter_and_pdf_suffix(tmp_path, monkeypatch) -> None:
+def test_pdf_dialog_uses_pywebview_621_filter_and_pdf_suffix(tmp_path, monkeypatch, technical_drawings) -> None:
     bridge = DesktopBridge(demo_enabled=True)
     chosen = tmp_path / "test 1_Berechnungsbericht"
     calls = {}
@@ -187,7 +187,11 @@ def test_pdf_dialog_uses_pywebview_621_filter_and_pdf_suffix(tmp_path, monkeypat
     monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(
         windows=[Window()], SAVE_DIALOG=20,
     ))
-    result = bridge.create_pdf_report({"type": "calculation"})
+    result = bridge.create_pdf_report({
+        "type": "calculation",
+        "geometrySnapshot": bridge.bootstrap()["data"]["connectionGeometry"],
+        "technicalDrawings": technical_drawings,
+    })
 
     assert result["status"] == "success"
     assert result["path"].endswith(".pdf")
@@ -197,7 +201,7 @@ def test_pdf_dialog_uses_pywebview_621_filter_and_pdf_suffix(tmp_path, monkeypat
     assert calls["file_types"] == ("PDF (*.pdf)",)
 
 
-def test_pdf_dialog_cancel_is_not_an_error(monkeypatch) -> None:
+def test_pdf_dialog_cancel_is_not_an_error(monkeypatch, technical_drawings) -> None:
     bridge = DesktopBridge(demo_enabled=True)
 
     class Window:
@@ -208,12 +212,16 @@ def test_pdf_dialog_cancel_is_not_an_error(monkeypatch) -> None:
         windows=[Window()], SAVE_DIALOG=20,
     ))
 
-    assert bridge.create_pdf_report({"type": "calculation"}) == {
+    assert bridge.create_pdf_report({
+        "type": "calculation",
+        "geometrySnapshot": bridge.bootstrap()["data"]["connectionGeometry"],
+        "technicalDrawings": technical_drawings,
+    }) == {
         "status": "cancelled",
     }
 
 
-def test_pdf_dialog_accepts_string_result_and_writes_exact_target(tmp_path, monkeypatch) -> None:
+def test_pdf_dialog_accepts_string_result_and_writes_exact_target(tmp_path, monkeypatch, technical_drawings) -> None:
     bridge = DesktopBridge(demo_enabled=True)
     chosen = tmp_path / "Direkter Stringpfad"
 
@@ -225,7 +233,11 @@ def test_pdf_dialog_accepts_string_result_and_writes_exact_target(tmp_path, monk
         windows=[Window()], SAVE_DIALOG=20,
     ))
 
-    result = bridge.create_pdf_report({"type": "calculation"})
+    result = bridge.create_pdf_report({
+        "type": "calculation",
+        "geometrySnapshot": bridge.bootstrap()["data"]["connectionGeometry"],
+        "technicalDrawings": technical_drawings,
+    })
     expected = chosen.with_suffix(".pdf")
     assert result == {
         "status": "success",

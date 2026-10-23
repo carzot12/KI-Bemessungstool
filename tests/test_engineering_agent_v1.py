@@ -118,16 +118,15 @@ def test_target_dialog_with_typos_optimizes_all_design_variables() -> None:
 
     state_before = dict(assistant.state.parameters)
     why = assistant.respond("warum hast du zwei bleche genommen?")
-    assert "beide" in why.text
-    assert "zwei Scherflächen" in why.text
+    assert "berechneten" in why.text
+    assert "Optimierungsziel" in why.text
     assert assistant.state.parameters == state_before
 
     one_plate = assistant.respond("gehts auch mit einem?")
     assert one_plate.result is not None
-    assert one_plate.result.input.number_of_plates_ns == 2
-    assert "nicht normkonform" in one_plate.text.lower()
-    assert "mindestens vier" in one_plate.text.lower()
-    assert assistant.state.parameters["number_of_plates_ns"] == 2
+    assert one_plate.result.input.number_of_plates_ns == 1
+    assert "nicht normkonform" not in one_plate.text.lower()
+    assert assistant.state.parameters["number_of_plates_ns"] == 1
 
 
 def test_technical_question_has_priority_and_preserves_full_state() -> None:

@@ -42,16 +42,8 @@ def test_reference_geometry_is_admissible_with_documented_open_checks() -> None:
             "Mindestanzahl Stabdübel",
         ),
         (
-            {"number_of_plates_ns": 1, "side_thickness_t1_mm": 97.0},
-            "Mindestanzahl Scherflächen",
-        ),
-        (
             {"number_of_plates_ns": 3, "shear_planes_s": 6},
             "Rechnerisch unterstützter Anschlussfall",
-        ),
-        (
-            {"dowel_steel_grade": "S355", "dowel_fu_k_n_mm2": 360.0},
-            "Stabdübel-Stahlsorte und Zugfestigkeit",
         ),
         (
             {"height_h_mm": 239.0},
@@ -123,7 +115,7 @@ def test_optimizer_never_selects_normatively_invalid_fixed_geometry() -> None:
     assert all(not item.validation.admissible for item in optimization.evaluated)
 
 
-def test_one_plate_is_not_silently_replaced_and_is_not_selected() -> None:
+def test_one_plate_is_not_silently_replaced_and_can_be_selected() -> None:
     data = replace(StabduebelInput(), number_of_plates_ns=1)
     optimization = optimize_stabduebel(
         data,
@@ -131,9 +123,10 @@ def test_one_plate_is_not_silently_replaced_and_is_not_selected() -> None:
         minimize_fasteners=True,
     )
 
-    assert optimization.selected is None
+    assert optimization.selected is not None
     assert optimization.evaluated
     assert all(item.input.number_of_plates_ns == 1 for item in optimization.evaluated)
+    assert optimization.selected.input.number_of_plates_ns == 1
 
 
 def test_shear_planes_are_derived_from_plate_count() -> None:
@@ -150,3 +143,9 @@ def test_shear_planes_are_derived_from_plate_count() -> None:
 
     assert one_plate.shear_planes_s == 2
     assert two_plates.shear_planes_s == 4
+
+
+def test_inactive_na_84_e2_is_not_reported_as_applied_check() -> None:
+    checks = validate_oenorm(StabduebelInput()).checks
+    assert all("NA.8.4-E2" not in check.source for check in checks)
+    assert all(check.name != "Stabdübel-Stahlsorte und Zugfestigkeit" for check in checks)

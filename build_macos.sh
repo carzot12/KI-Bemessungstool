@@ -40,6 +40,7 @@ fi
 
 for resource in \
     assets/logo.png \
+    assets/widget_1.png \
     assets/app_icon.icns \
     frontend/dist/index.html \
     infopol/materials/timber.json \
@@ -92,6 +93,9 @@ fi
 # das bereits signierte, saubere Bundle.
 mv "$APP_PATH" "$SIGN_STAGE_DIR/unsigned.app"
 mv "$SIGN_STAGE_APP" "$APP_PATH"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+# Der signierte Stand wurde bereits im neutralen Verzeichnis streng geprüft.
+# Im synchronisierten Desktop-Projekt hängt FileProvider am Ziel unmittelbar
+# wieder FinderInfo an; eine zweite Prüfung dort wäre deshalb irreführend. Bei
+# der Installation wird ohne erweiterte Attribute kopiert und erneut geprüft.
 
 print "App erstellt: $APP_PATH"

@@ -30,6 +30,14 @@ export interface VisualizationModel {
   bottomTimberEdgeDistanceMm: number;
 }
 
+export type PdfTechnicalView = "side" | "top" | "section" | "isometric";
+
+export interface PdfTechnicalDrawing {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
 export interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
@@ -87,6 +95,15 @@ export interface UISnapshot {
   recommendedVariant: Variant | null;
   currentVariant: Variant | null;
   recommendation: string;
+  engineeringAssessment: null | {
+    status: string;
+    suitable: boolean;
+    utilizationPercent: number;
+    reservePercent: number;
+    governingCheck: string;
+    summary: string;
+    recommendation: string;
+  };
   sources: string[];
   optimizationGoal: string | null;
   agentStatus: {
@@ -127,6 +144,17 @@ declare global {
         copy_chat_text(): Promise<string>;
         form_options(): Promise<FormOptions>;
         set_llm_provider(payload: { provider: "local" | "openai" }): Promise<BridgeEnvelope>;
+        create_engineering_assessment(): Promise<{
+          ok: boolean;
+          available: boolean;
+          report: null | {
+            title: string;
+            provider: "local" | "openai";
+            sections: { title: string; content: string }[];
+          };
+          error: string | null;
+          detail?: string;
+        }>;
         compact_calculate(
           payload: Record<string, string | number>,
         ): Promise<BridgeEnvelope>;
@@ -138,7 +166,11 @@ declare global {
           data: Record<string, string | number>;
           error: string | null;
         }>;
-        create_pdf_report(payload: { type: "calculation" | "variants" }): Promise<{
+        create_pdf_report(payload: {
+          type: "calculation" | "variants";
+          geometrySnapshot: VisualizationModel;
+          technicalDrawings: Record<PdfTechnicalView, PdfTechnicalDrawing>;
+        }): Promise<{
           status: "success" | "cancelled" | "error";
           path?: string;
           size?: number;

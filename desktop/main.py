@@ -13,7 +13,7 @@ from desktop.bridge import DesktopBridge
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SPLASH_MINIMUM_SECONDS = 1.8
+SPLASH_MINIMUM_SECONDS = 7.0
 
 
 def resource_path(relative_path: str | Path) -> Path:
@@ -65,7 +65,9 @@ def frontend_url(dev_url: str | None = None) -> str:
 
 def splash_html() -> str:
     """Return the lightweight startup document for the separate splash window."""
-    logo_data = base64.b64encode(resource_path("assets/logo.png").read_bytes()).decode()
+    logo_data = base64.b64encode(
+        resource_path("assets/widget_1.png").read_bytes()
+    ).decode()
     return f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><style>
   :root {{ color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }}
@@ -73,7 +75,7 @@ def splash_html() -> str:
   html, body {{ width: 100%; height: 100%; margin: 0; overflow: hidden; }}
   body {{ display: grid; place-content: center; background: #fff; color: #20242a; text-align: center; }}
   main {{ width: 640px; height: 390px; padding: 48px 72px 42px; border: 1px solid #e3e6ea; }}
-  img {{ display: block; width: 390px; height: 76px; margin: 0 auto 24px; object-fit: contain; }}
+  img {{ display: block; width: 150px; height: auto; margin: 0 auto 24px; }}
   h1 {{ margin: 0; font-size: 27px; line-height: 1.2; letter-spacing: -.3px; }}
   p {{ margin: 6px 0 28px; color: #6b7280; font-size: 14px; }}
   span {{ display: block; margin-bottom: 11px; color: #6b7280; font-size: 12px; }}
@@ -110,8 +112,6 @@ def launch(dev_url: str | None = None) -> None:
         "KI-Bemessungstool",
         frontend_url(dev_url),
         js_api=bridge,
-        width=1500,
-        height=940,
         min_size=(1100, 700),
         hidden=True,
         background_color="#F3F4F6",
@@ -147,6 +147,7 @@ def launch(dev_url: str | None = None) -> None:
         # closes, then destroy it as part of normal application shutdown.
         splash.hide()
         main_window.show()
+        main_window.maximize()
 
     def close_primary_window() -> None:
         splash.destroy()
