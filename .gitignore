@@ -21,6 +21,7 @@ dist/
 # Lokale Sicherungen, Zwischenstände und Laufzeitdateien
 backups/
 tmp/
+/output/
 *.backup
 *.log
 
